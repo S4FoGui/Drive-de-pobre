@@ -1,0 +1,16 @@
+node_modules/
+uploads/
+.tmp/
+*.log
+database.json
+server_output.txt
+.codex
+# System Pilot Memory Files
+task_plan.md
+findings.md
+progress.md
+claude.md
+gemini.md
+architecture/
+tools/
+.env
