@@ -3,6 +3,8 @@ const cors = require('cors');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const archiver = require('archiver');
+const AdmZip = require('adm-zip');
 
 const app = express();
 const PORT = 3001;
@@ -14,10 +16,9 @@ const GENERAL_LINKS_DIR = path.join(__dirname, 'uploads/links-gerais');
 const VIDEO_LINKS_DIR = path.join(__dirname, 'uploads/links-video');
 const GENERAL_LINKS_FILE = path.join(GENERAL_LINKS_DIR, 'links.json');
 const VIDEO_LINKS_FILE = path.join(VIDEO_LINKS_DIR, 'links.json');
-const SYSTEM_SUBJECTS = ['Matemática', 'Física', 'Química'];
 const DEFAULT_DATA = {
   materials: [],
-  subjects: SYSTEM_SUBJECTS,
+  subjects: ['Matemática', 'Física', 'Química'],
   theme: {
     primary: '#6366f1',
     bgMain: '#0f172a',
@@ -55,7 +56,7 @@ function writeJsonFile(file, data) {
 }
 
 function normalizeSubjects(subjects) {
-  return Array.from(new Set([...SYSTEM_SUBJECTS, ...((subjects || []).filter(Boolean))]));
+  return Array.from(new Set((subjects || []).filter(Boolean)));
 }
 
 function copyIfExists(source, destination) {
@@ -97,6 +98,8 @@ const importUpload = multer({ storage: multer.memoryStorage() });
 // Serve os arquivos da pasta uploads
 app.use('/files', express.static(PDF_DIR));
 app.use('/api/files', express.static(PDF_DIR));
+app.use('/files', (req, res) => res.status(404).send('Arquivo PDF não encontrado.'));
+app.use('/api/files', (req, res) => res.status(404).send('Arquivo PDF não encontrado.'));
 
 function readDatabase() {
   const baseData = { ...DEFAULT_DATA, ...readJsonFile(DB_FILE, DEFAULT_DATA) };
@@ -140,6 +143,28 @@ function handleUpload(req, res) {
 app.post('/upload', upload.single('pdf'), handleUpload);
 app.post('/api/upload', upload.single('pdf'), handleUpload);
 
+function handleDeleteFile(req, res) {
+  const { url } = req.body;
+  if (!url) return res.status(400).send('URL não informada.');
+  
+  const filename = getStoredPdfNameFromUrl(url);
+  if (!filename) return res.status(400).send('Nome de arquivo inválido.');
+
+  const filePath = path.join(PDF_DIR, filename);
+  if (fs.existsSync(filePath)) {
+    try {
+      fs.unlinkSync(filePath);
+      return res.json({ ok: true, message: 'Arquivo deletado.' });
+    } catch (err) {
+      console.error('Erro ao deletar arquivo:', err);
+      return res.status(500).send('Erro ao deletar arquivo.');
+    }
+  }
+  res.json({ ok: true, message: 'Arquivo não encontrado no disco.' });
+}
+
+app.post('/api/delete-file', handleDeleteFile);
+
 function handleGetMaterials(req, res) {
   res.json(readDatabase());
 }
@@ -157,7 +182,21 @@ function handleExportDrive(req, res) {
 
   ensureDir(exportDir);
 
-  const exportMaterials = data.materials.map((material) => {
+  // Filtros recebidos do frontend
+  const filterSubjects = Array.isArray(req.body?.filterSubjects) ? req.body.filterSubjects : null;
+  const includePresets = req.body?.includePresets !== false; // default true
+
+  // Filtra materiais pelas matérias selecionadas
+  const materialsToExport = filterSubjects
+    ? data.materials.filter((m) => filterSubjects.includes(m.subject))
+    : data.materials;
+
+  // Filtra subjects exportadas também
+  const subjectsToExport = filterSubjects
+    ? data.subjects.filter((s) => filterSubjects.includes(s))
+    : data.subjects;
+
+  const exportMaterials = materialsToExport.map((material) => {
     if (material.type !== 'pdf') {
       return material;
     }
@@ -177,9 +216,9 @@ function handleExportDrive(req, res) {
 
   writeJsonFile(path.join(exportDir, 'drive.json'), {
     exportedAt: new Date().toISOString(),
-    subjects: data.subjects,
+    subjects: subjectsToExport,
     theme: data.theme,
-    themePresets: data.themePresets,
+    themePresets: includePresets ? data.themePresets : [],
     materials: exportMaterials,
   });
 
@@ -194,10 +233,37 @@ function handleExportDrive(req, res) {
 
 function handleImportDrive(req, res) {
   const files = Array.isArray(req.files) ? req.files : [];
-  const jsonFile = files.find((file) => file.originalname.toLowerCase().endsWith('.json'));
+  const zipFile = files.find((file) => file.originalname.toLowerCase().endsWith('.zip'));
+  let jsonFile = files.find((file) => file.originalname.toLowerCase().endsWith('.json'));
+  let pdfFilesByName = new Map();
+
+  if (zipFile) {
+    try {
+      const zip = new AdmZip(zipFile.buffer);
+      const zipEntries = zip.getEntries();
+      
+      const jsonEntry = zipEntries.find(e => e.entryName === 'drive.json');
+      if (jsonEntry) {
+        jsonFile = { buffer: jsonEntry.getData() };
+      }
+      
+      zipEntries.forEach(e => {
+        if (!e.isDirectory && e.entryName.startsWith('pdfs/')) {
+          pdfFilesByName.set(path.basename(e.entryName), {
+            originalname: path.basename(e.entryName),
+            buffer: e.getData()
+          });
+        }
+      });
+    } catch (err) {
+      return res.status(400).json({ error: 'Falha ao ler o arquivo ZIP.' });
+    }
+  } else {
+    pdfFilesByName = new Map(files.map((file) => [file.originalname, file]));
+  }
 
   if (!jsonFile) {
-    return res.status(400).json({ error: 'Envie um arquivo JSON do drive.' });
+    return res.status(400).json({ error: 'Envie um arquivo ZIP do drive ou um arquivo JSON.' });
   }
 
   let imported;
@@ -208,7 +274,6 @@ function handleImportDrive(req, res) {
   }
 
   const current = readDatabase();
-  const pdfFilesByName = new Map(files.map((file) => [file.originalname, file]));
   const importedMaterials = Array.isArray(imported.materials) ? imported.materials.map((material) => {
     const baseMaterial = {
       ...material,
@@ -247,11 +312,69 @@ function handleImportDrive(req, res) {
   res.json({ ok: true, importedCount: importedMaterials.length });
 }
 
+function handleExportDriveZip(req, res) {
+  const data = readDatabase();
+
+  // Filtros
+  const filterSubjects = Array.isArray(req.body?.filterSubjects) ? req.body.filterSubjects : null;
+  const includePresets = req.body?.includePresets !== false;
+
+  const materialsToExport = filterSubjects
+    ? data.materials.filter((m) => filterSubjects.includes(m.subject))
+    : data.materials;
+
+  const subjectsToExport = filterSubjects
+    ? data.subjects.filter((s) => filterSubjects.includes(s))
+    : data.subjects;
+
+  // Monta o JSON do drive (sem exportFile, pois no ZIP os PDFs ficam em pdfs/)
+  const driveJson = {
+    exportedAt: new Date().toISOString(),
+    subjects: subjectsToExport,
+    theme: data.theme,
+    themePresets: includePresets ? data.themePresets : [],
+    materials: materialsToExport.map((m) => {
+      if (m.type !== 'pdf') return m;
+      const storedName = getStoredPdfNameFromUrl(m.url);
+      return storedName ? { ...m, exportFile: `pdfs/${storedName}` } : m;
+    }),
+  };
+
+  const filename = `drive-export-${Date.now()}.zip`;
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+  const archive = archiver('zip', { zlib: { level: 6 } });
+  archive.on('error', (err) => {
+    console.error('Erro ao gerar ZIP:', err);
+    if (!res.headersSent) res.status(500).send('Erro ao gerar ZIP.');
+  });
+
+  archive.pipe(res);
+
+  // Adiciona o drive.json ao ZIP
+  archive.append(JSON.stringify(driveJson, null, 2), { name: 'drive.json' });
+
+  // Adiciona os PDFs ao ZIP (dentro de pdfs/)
+  for (const material of materialsToExport) {
+    if (material.type !== 'pdf') continue;
+    const storedName = getStoredPdfNameFromUrl(material.url);
+    if (!storedName) continue;
+    const filePath = path.join(PDF_DIR, storedName);
+    if (fs.existsSync(filePath)) {
+      archive.file(filePath, { name: `pdfs/${storedName}` });
+    }
+  }
+
+  archive.finalize();
+}
+
 app.get('/materials', handleGetMaterials);
 app.get('/api/materials', handleGetMaterials);
 app.post('/save', handleSave);
 app.post('/api/save', handleSave);
 app.post('/api/export-drive', handleExportDrive);
+app.post('/api/export-drive-zip', handleExportDriveZip);
 app.post('/api/import-drive', importUpload.any(), handleImportDrive);
 app.use('/exports', express.static(EXPORTS_DIR));
 

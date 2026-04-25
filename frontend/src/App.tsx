@@ -2,20 +2,19 @@ import { useState, useEffect, useRef } from 'react'
 import logo from './icon do drive de pobre.png'
 import agentIcon from '../elem.png'
 import {
-  Search, Folder, Plus, Trash2, Lock, LogOut, Video, Filter, X, Settings, Send, Sparkles, Upload, ChevronDown, Download, Link2
+  Search, Folder, Plus, Trash2, Lock, LogOut, Video, Filter, X, Settings, Send, Sparkles, Upload, ChevronDown, Download, Link2, Eye, EyeOff, Check, Palette, Database, Bot, BookOpen, AlertCircle, FileText, Globe
 } from 'lucide-react'
 
 interface Material { id: string; title: string; subject: string; type: 'video' | 'pdf' | 'link'; url: string; }
 interface ThemeConfig { primary: string; bgMain: string; bgCard: string; textMain: string; }
 interface ThemePreset { id: string; name: string; config: ThemeConfig; }
-interface AIConfig { provider: 'groq' | 'gemini'; apiKey: string; }
+interface AIConfig { provider: 'groq' | 'gemini' | 'openai'; apiKey: string; model?: string; }
 
 const API_URL = '/api';
 const LOCAL_DATA_KEY = 'dp_site_data';
 const DEFAULT_PRESET_ID = 'preset-default';
 const GEMINI_MODEL = 'gemini-2.0-flash';
-const SYSTEM_SUBJECTS = ['Matemática', 'Física', 'Química'];
-const DEFAULT_SUBJECTS = SYSTEM_SUBJECTS;
+const DEFAULT_SUBJECTS = ['Matemática', 'Física', 'Química'];
 const DEFAULT_THEME: ThemeConfig = {
   primary: '#6366f1',
   bgMain: '#0f172a',
@@ -35,18 +34,9 @@ interface PersistedData {
   themePresets: ThemePreset[];
 }
 
-interface ExportDriveResponse {
-  ok: boolean;
-  exportId: string;
-  folder: string;
-  downloadUrl: string;
-  hasPdfs: boolean;
-  error?: string;
-}
 
 const mergeSubjects = (list: string[]) => {
-  const unique = Array.from(new Set([...SYSTEM_SUBJECTS, ...list.filter(Boolean)]));
-  return unique;
+  return Array.from(new Set(list.filter(Boolean)));
 };
 
 function CustomSelect({ options, value, onChange, label }: { options: {value: string, label: string}[], value: string, onChange: (v: string) => void, label?: string }) {
@@ -104,10 +94,17 @@ function App() {
   const [isExportingDrive, setIsExportingDrive] = useState(false)
   const [isImportingDrive, setIsImportingDrive] = useState(false)
   const [password, setPassword] = useState('')
+  const [showApiKey, setShowApiKey] = useState(false)
+  const [savedIndicator, setSavedIndicator] = useState(false)
   const [newSubjectName, setNewSubjectName] = useState('')
   const [newMaterial, setNewMaterial] = useState({ title: '', subject: '', type: 'video' as 'video' | 'pdf' | 'link', url: '' })
+  const [formErrors, setFormErrors] = useState<{ title?: string; url?: string }>({})
   const visibleThemePresets = [DEFAULT_PRESET, ...themePresets.filter(p => p.id !== DEFAULT_PRESET_ID)]
   const importDriveInputRef = useRef<HTMLInputElement | null>(null)
+  // Export filters
+  const [exportSubjects, setExportSubjects] = useState<string[] | null>(null) // null = all
+  const [exportIncludePresets, setExportIncludePresets] = useState(true)
+  const activeExportSubjects = exportSubjects ?? subjects
 
   useEffect(() => {
     const root = document.documentElement;
@@ -190,59 +187,51 @@ function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
+    }).then(() => {
+      setSavedIndicator(true);
+      setTimeout(() => setSavedIndicator(false), 2000);
     }).catch(() => console.log('Nao foi possivel salvar no servidor, dados mantidos localmente.'));
+  };
+
+  const toggleExportSubject = (sub: string) => {
+    const current = exportSubjects ?? subjects;
+    if (current.includes(sub)) {
+      setExportSubjects(current.filter(s => s !== sub));
+    } else {
+      setExportSubjects([...current, sub]);
+    }
+  };
+
+  // Utilitário: baixa um blob como arquivo com o nome dado
+  const downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const exportDrive = async () => {
     setIsExportingDrive(true);
     try {
-      const res = await fetch(`${API_URL}/export-drive`, { method: 'POST' });
-      const data: ExportDriveResponse = await res.json();
-      if (!res.ok) throw new Error(data?.error || 'Falha ao exportar drive.');
+      const selectedSubs = exportSubjects ?? subjects;
+      const res = await fetch(`${API_URL}/export-drive-zip`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filterSubjects: selectedSubs, includePresets: exportIncludePresets }),
+      });
 
-      const supportsDirectoryPicker = 'showDirectoryPicker' in window;
-      if (!supportsDirectoryPicker) {
-        alert(data.hasPdfs
-          ? `Drive exportado com sucesso.\nPasta criada no servidor: ${data.folder}\nJSON: ${window.location.origin}${data.downloadUrl}`
-          : `Drive exportado com sucesso.\nJSON: ${window.location.origin}${data.downloadUrl}`);
-        return;
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(errText || `Erro HTTP ${res.status}`);
       }
 
-      const directoryHandle = await (window as unknown as Window & {
-        showDirectoryPicker: () => Promise<FileSystemDirectoryHandle>;
-      }).showDirectoryPicker();
-
-      const driveResponse = await fetch(data.downloadUrl);
-      if (!driveResponse.ok) throw new Error('Falha ao baixar o drive exportado.');
-      const driveBlob = await driveResponse.blob();
-      const driveText = await driveBlob.text();
-      const driveJson = JSON.parse(driveText) as { materials?: Array<{ type?: string; exportFile?: string }> };
-
-      const driveFileHandle = await directoryHandle.getFileHandle('drive.json', { create: true });
-      const driveWritable = await driveFileHandle.createWritable();
-      await driveWritable.write(driveBlob);
-      await driveWritable.close();
-
-      if (Array.isArray(driveJson.materials)) {
-        for (const material of driveJson.materials) {
-          if (material.type !== 'pdf' || !material.exportFile) continue;
-
-          const exportFilePath = material.exportFile.replace(/^\/+/, '');
-          const pdfUrl = `/exports/${data.exportId}/${exportFilePath}`;
-          const pdfResponse = await fetch(pdfUrl);
-          if (!pdfResponse.ok) continue;
-
-          const pdfBlob = await pdfResponse.blob();
-          const fileName = exportFilePath.split('/').pop() || `arquivo-${Date.now()}.pdf`;
-          const pdfDirHandle = await directoryHandle.getDirectoryHandle('pdfs', { create: true });
-          const pdfFileHandle = await pdfDirHandle.getFileHandle(fileName, { create: true });
-          const pdfWritable = await pdfFileHandle.createWritable();
-          await pdfWritable.write(pdfBlob);
-          await pdfWritable.close();
-        }
-      }
-
-      alert('Drive exportado com sucesso para a pasta selecionada.');
+      const zipBlob = await res.blob();
+      const filename = `drive-export-${new Date().toISOString().slice(0, 10)}.zip`;
+      downloadBlob(zipBlob, filename);
     } catch (error) {
       alert(`Erro ao exportar drive: ${error instanceof Error ? error.message : 'Falha desconhecida.'}`);
     } finally {
@@ -317,40 +306,96 @@ function App() {
   };
 
   const removeSubject = (sub: string) => {
-    if (SYSTEM_SUBJECTS.includes(sub)) return;
-    if (window.confirm(`Excluir "${sub}"?`)) {
-      const up = subjects.filter(s => s !== sub); setSubjects(up); saveData(materials, up, theme, themePresets);
+    const subMaterials = materials.filter(m => m.subject === sub);
+    const count = subMaterials.length;
+    const msg = count > 0
+      ? `Excluir a matéria "${sub}" e seus ${count} material(is)? Esta ação não pode ser desfeita.`
+      : `Excluir a matéria "${sub}"?`;
+    if (window.confirm(msg)) {
+      // Remove PDFs do servidor
+      subMaterials.forEach(m => {
+        if (m.type === 'pdf' && m.url) {
+          fetch(`${API_URL}/delete-file`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: m.url }),
+          }).catch(err => console.error('Erro ao deletar arquivo:', err));
+        }
+      });
+      const newMaterials = materials.filter(m => m.subject !== sub);
+      const newSubjects = subjects.filter(s => s !== sub);
+      setMaterials(newMaterials);
+      setSubjects(newSubjects);
+      saveData(newMaterials, newSubjects, theme, themePresets);
+      // Se estava filtrando por essa matéria, volta para "Todas"
+      if (selectedSubject === sub) setSelectedSubject('Todas');
     }
   };
 
   const addMaterial = () => {
-    if (!newMaterial.title || !newMaterial.url) return;
+    const errors: { title?: string; url?: string } = {};
+    if (!newMaterial.title.trim()) errors.title = 'O título é obrigatório.';
+    if (!newMaterial.url.trim()) errors.url = 'O link ou arquivo é obrigatório.';
+    if (Object.keys(errors).length > 0) { setFormErrors(errors); return; }
+    setFormErrors({});
     const up = [...materials, { ...newMaterial, id: Date.now().toString() }];
     setMaterials(up); saveData(up, subjects, theme, themePresets); setShowAddModal(false);
+    setNewMaterial({ title: '', subject: subjects[0] || '', type: 'video', url: '' });
   };
 
   const deleteMaterial = (id: string) => {
     if (window.confirm('Excluir?')) {
-      const up = materials.filter(m => m.id !== id); setMaterials(up); saveData(up, subjects, theme, themePresets);
+      const materialToDelete = materials.find(m => m.id === id);
+      const up = materials.filter(m => m.id !== id);
+      setMaterials(up); 
+      saveData(up, subjects, theme, themePresets);
+
+      if (materialToDelete?.type === 'pdf' && materialToDelete.url) {
+        fetch(`${API_URL}/delete-file`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url: materialToDelete.url })
+        }).catch(err => console.error('Erro ao deletar arquivo fisico:', err));
+      }
     }
   };
 
   const callAiAgent = async () => {
     if (!aiConfig.apiKey) return alert('API Key ausente!');
     setIsAiLoading(true);
-    const sys = `Admin Drive de Pobre. Materias: [${subjects.join(', ')}]. Materiais: [${materials.map(m => `${m.id}::${m.title}::${m.subject}::${m.type}`).join(' | ')}]. Ações JSON: {"action": "ADD_SUBJECT", "name": "N"}, {"action": "ADD_MATERIAL", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "EDIT_MATERIAL", "id": "ID", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "DELETE_MATERIAL", "id": "ID"}. Se nao souber o id, pode enviar "title" para localizar o material existente pelo titulo. Responda com apenas um JSON valido.`;
+    const sys = `Admin Drive de Pobre. Materias: [${subjects.join(', ')}]. Materiais: [${materials.map(m => `${m.id}::${m.title}::${m.subject}::${m.type}::${m.url}`).join(' | ')}]. Ações disponíveis (JSON): {"action": "ADD_SUBJECT", "name": "N"}, {"action": "DELETE_SUBJECT", "name": "N"}, {"action": "ADD_MATERIAL", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "EDIT_MATERIAL", "id": "ID", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "DELETE_MATERIAL", "id": "ID"}. REGRAS: Para UMA ação responda com um único objeto JSON. Para MÚLTIPLAS ações responda com um array JSON [...]. Nunca inclua texto fora do JSON. Se nao souber o id do material, use "title" para localizar pelo titulo.`;
     try {
-      const res = await fetch(aiConfig.provider === 'groq' ? 'https://api.groq.com/openai/v1/chat/completions' : `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${aiConfig.apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(aiConfig.provider === 'groq' && { 'Authorization': `Bearer ${aiConfig.apiKey}` }) },
-        body: JSON.stringify(aiConfig.provider === 'groq' ? { model: "llama-3.3-70b-versatile", messages: [{ role: "system", content: sys }, { role: "user", content: aiPrompt }] } : { contents: [{ parts: [{ text: sys + "\n" + aiPrompt }] }] })
-      });
+      const isOpenAICompat = aiConfig.provider === 'groq' || aiConfig.provider === 'openai';
+      const openaiUrl = aiConfig.provider === 'groq'
+        ? 'https://api.groq.com/openai/v1/chat/completions'
+        : 'https://api.openai.com/v1/chat/completions';
+      const openaiModel = aiConfig.provider === 'groq'
+        ? 'llama-3.3-70b-versatile'
+        : (aiConfig.model || 'gpt-4o-mini');
+
+      const res = await fetch(
+        isOpenAICompat
+          ? openaiUrl
+          : `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${aiConfig.apiKey}`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(isOpenAICompat && { 'Authorization': `Bearer ${aiConfig.apiKey}` }),
+          },
+          body: JSON.stringify(
+            isOpenAICompat
+              ? { model: openaiModel, messages: [{ role: 'system', content: sys }, { role: 'user', content: aiPrompt }] }
+              : { contents: [{ parts: [{ text: sys + '\n' + aiPrompt }] }] }
+          ),
+        }
+      );
       const data = await res.json();
       if (!res.ok) {
         throw new Error(data?.error?.message || `Erro HTTP ${res.status}`);
       }
 
-      const text = aiConfig.provider === 'groq'
+      const text = isOpenAICompat
         ? data?.choices?.[0]?.message?.content
         : data?.candidates?.[0]?.content?.parts?.map((part: { text?: string }) => part.text || '').join(' ');
 
@@ -359,50 +404,77 @@ function App() {
         throw new Error(blockReason ? `Resposta bloqueada: ${blockReason}` : 'A IA nao retornou texto utilizavel.');
       }
 
-      const match = text.match(/\{.*\}/s);
-      if (match) {
-        const act = JSON.parse(match[0]);
+      // Extrai JSON — suporta array [...] ou objeto único {...}
+      const jsonMatch = text.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
+      if (!jsonMatch) throw new Error('A IA nao retornou um JSON valido.');
+
+      const parsed = JSON.parse(jsonMatch[0]);
+      const actions: Record<string, unknown>[] = Array.isArray(parsed) ? parsed : [parsed];
+
+      // Aplica todas as ações em batch sobre snapshots locais
+      let newMaterials = [...materials];
+      let newSubjects = [...subjects];
+
+      for (const act of actions) {
         const findMaterialId = () => {
           if (act.id) return String(act.id);
           if (act.title) {
-            const found = materials.find(m => m.title.toLowerCase() === String(act.title).toLowerCase());
+            const found = newMaterials.find(m => m.title.toLowerCase() === String(act.title).toLowerCase());
             return found?.id;
           }
           return undefined;
         };
 
-        if (act.action === "ADD_SUBJECT") { const up = mergeSubjects([...subjects, act.name]); setSubjects(up); saveData(materials, up, theme, themePresets); }
-        else if (act.action === "ADD_MATERIAL") { const up = [...materials, { ...act, id: Date.now().toString() }]; setMaterials(up); saveData(up, subjects, theme, themePresets); }
-        else if (act.action === "EDIT_MATERIAL") {
+        if (act.action === "ADD_SUBJECT") {
+          newSubjects = mergeSubjects([...newSubjects, String(act.name || '')]);
+
+        } else if (act.action === "DELETE_SUBJECT") {
+          const subName = String(act.name || '').trim();
+          const found = newSubjects.find(s => s.toLowerCase() === subName.toLowerCase());
+          if (found) newSubjects = newSubjects.filter(s => s !== found);
+
+        } else if (act.action === "ADD_MATERIAL") {
+          newMaterials = [...newMaterials, {
+            id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
+            title: String(act.title || ''),
+            subject: String(act.subject || newSubjects[0] || ''),
+            type: (act.type as 'video' | 'pdf' | 'link') || 'video',
+            url: String(act.url || ''),
+          }];
+
+        } else if (act.action === "EDIT_MATERIAL") {
           const materialId = findMaterialId();
-          if (!materialId) {
-            alert('IA nao encontrou o material para editar.');
-          } else {
-            const up = materials.map(m => m.id === materialId ? {
+          if (materialId) {
+            newMaterials = newMaterials.map(m => m.id === materialId ? {
               ...m,
-              ...(act.title ? { title: act.title } : {}),
-              ...(act.subject ? { subject: act.subject } : {}),
-              ...(act.type ? { type: act.type } : {}),
-              ...(act.url ? { url: act.url } : {}),
+              ...(act.title ? { title: String(act.title) } : {}),
+              ...(act.subject ? { subject: String(act.subject) } : {}),
+              ...(act.type ? { type: act.type as 'video' | 'pdf' | 'link' } : {}),
+              ...(act.url ? { url: String(act.url) } : {}),
             } : m);
-            setMaterials(up);
-            saveData(up, subjects, theme, themePresets);
           }
-        }
-        else if (act.action === "DELETE_MATERIAL") {
+
+        } else if (act.action === "DELETE_MATERIAL") {
           const materialId = findMaterialId();
-          if (!materialId) {
-            alert('IA nao encontrou o material para excluir.');
-          } else {
-            const up = materials.filter(m => m.id !== materialId);
-            setMaterials(up);
-            saveData(up, subjects, theme, themePresets);
+          if (materialId) {
+            const materialToDelete = newMaterials.find(m => m.id === materialId);
+            newMaterials = newMaterials.filter(m => m.id !== materialId);
+            if (materialToDelete?.type === 'pdf' && materialToDelete.url) {
+              fetch(`${API_URL}/delete-file`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: materialToDelete.url })
+              }).catch(err => console.error('Erro ao deletar arquivo fisico:', err));
+            }
           }
         }
-        setAiPrompt('');
-      } else {
-        throw new Error('A IA nao retornou um JSON valido.');
       }
+
+      // Commit do batch
+      setMaterials(newMaterials);
+      setSubjects(newSubjects);
+      saveData(newMaterials, newSubjects, theme, themePresets);
+      setAiPrompt('');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Erro IA';
       alert(`Erro IA: ${message}`);
@@ -577,74 +649,236 @@ function App() {
       {/* MODAL CONFIGURAÇÕES */}
       {showAdminPanel && (
         <div className="modal-overlay">
-          <div className="modal">
+          <div className="modal" style={{ maxWidth: '600px' }}>
             <div className="modal-header">
-              <h2>Painel Admin</h2>
-              <button className="modal-close" onClick={() => setShowAdminPanel(false)}><X size={20} /></button>
-            </div>
-            <CustomSelect 
-              label="🚀 Provedor IA"
-              value={aiConfig.provider} 
-              options={[{value: 'groq', label: 'Groq'}, {value: 'gemini', label: 'Gemini'}]}
-              onChange={val => { 
-                const up = {...aiConfig, provider: val as any}; 
-                setAiConfig(up); 
-                localStorage.setItem('dp_ai_config', JSON.stringify(up)); 
-              }} 
-            />
-            <div className="form-group"><label>🔑 API Key</label><input className="form-input" type="password" value={aiConfig.apiKey} onChange={e => { const up = {...aiConfig, apiKey: e.target.value}; setAiConfig(up); localStorage.setItem('dp_ai_config', JSON.stringify(up)); }} /></div>
-            <div className="color-grid" style={{ marginBottom: '1.5rem' }}>
-              <div className="form-group"><label>Principal</label><div className="color-input-wrapper"><input type="color" value={theme.primary} onChange={e => updateTheme({ primary: e.target.value })} /></div></div>
-              <div className="form-group"><label>Fundo</label><div className="color-input-wrapper"><input type="color" value={theme.bgMain} onChange={e => updateTheme({ bgMain: e.target.value })} /></div></div>
-              <div className="form-group"><label>Cards</label><div className="color-input-wrapper"><input type="color" value={theme.bgCard} onChange={e => updateTheme({ bgCard: e.target.value })} /></div></div>
-              <div className="form-group"><label>Texto</label><div className="color-input-wrapper"><input type="color" value={theme.textMain} onChange={e => updateTheme({ textMain: e.target.value })} /></div></div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <Settings size={22} style={{ opacity: 0.8 }} />
+                <h2 style={{ margin: 0 }}>Painel Admin</h2>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                {savedIndicator && (
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', fontSize: '0.8rem', color: '#22c55e', background: 'rgba(34,197,94,0.1)', padding: '0.3rem 0.8rem', borderRadius: '999px', border: '1px solid rgba(34,197,94,0.3)' }}>
+                    <Check size={13} /> Salvo
+                  </span>
+                )}
+                <button className="modal-close" onClick={() => setShowAdminPanel(false)}><X size={20} /></button>
+              </div>
             </div>
 
-            <div style={{ marginBottom: '2.5rem' }}>
-              <div style={{ display: 'flex', gap: '0.8rem', marginBottom: '1.5rem', flexWrap: 'wrap' }}>
-                <button className="btn" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)' }} onClick={exportDrive} disabled={isExportingDrive}>
-                  {isExportingDrive ? 'Exportando...' : 'Exportar Drive'}
-                </button>
-                <button className="btn" style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)' }} onClick={() => importDriveInputRef.current?.click()} disabled={isImportingDrive}>
-                  {isImportingDrive ? 'Importando...' : 'Adicionar Drive'}
-                </button>
-                <input
-                  ref={importDriveInputRef}
-                  type="file"
-                  accept=".json,.pdf"
-                  multiple
-                  onChange={importDrive}
-                  style={{ display: 'none' }}
+            {/* SEÇÃO: INTELIGÊNCIA ARTIFICIAL */}
+            <div className="admin-section">
+              <div className="admin-section-title">
+                <Bot size={16} />
+                <span>Inteligência Artificial</span>
+              </div>
+              <CustomSelect
+                label="Provedor"
+                value={aiConfig.provider}
+                options={[
+                  {value: 'groq', label: '⚡ Groq (Rápido)'},
+                  {value: 'gemini', label: '✨ Gemini (Google)'},
+                  {value: 'openai', label: '🤖 OpenAI (GPT)'},
+                ]}
+                onChange={val => {
+                  const up = {...aiConfig, provider: val as 'groq' | 'gemini' | 'openai', model: val === 'openai' ? (aiConfig.model || 'gpt-4o-mini') : undefined};
+                  setAiConfig(up);
+                  localStorage.setItem('dp_ai_config', JSON.stringify(up));
+                }}
+              />
+              {aiConfig.provider === 'openai' && (
+                <CustomSelect
+                  label="Modelo"
+                  value={aiConfig.model || 'gpt-4o-mini'}
+                  options={[
+                    {value: 'gpt-4o-mini', label: 'GPT-4o Mini (Rápido e barato)'},
+                    {value: 'gpt-4o', label: 'GPT-4o (Mais capaz)'},
+                    {value: 'gpt-4-turbo', label: 'GPT-4 Turbo'},
+                    {value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo (Legado)'},
+                  ]}
+                  onChange={val => {
+                    const up = {...aiConfig, model: val};
+                    setAiConfig(up);
+                    localStorage.setItem('dp_ai_config', JSON.stringify(up));
+                  }}
                 />
+              )}
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label className="form-label">🔑 API Key</label>
+                <div style={{ position: 'relative' }}>
+                  <input
+                    className="form-input"
+                    type={showApiKey ? 'text' : 'password'}
+                    value={aiConfig.apiKey}
+                    placeholder="Cole sua chave aqui..."
+                    onChange={e => {
+                      const up = {...aiConfig, apiKey: e.target.value};
+                      setAiConfig(up);
+                      localStorage.setItem('dp_ai_config', JSON.stringify(up));
+                    }}
+                    style={{ paddingRight: '3rem' }}
+                  />
+                  <button
+                    onClick={() => setShowApiKey(!showApiKey)}
+                    style={{ position: 'absolute', right: '1rem', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', opacity: 0.6, display: 'flex', alignItems: 'center' }}
+                  >
+                    {showApiKey ? <EyeOff size={18} /> : <Eye size={18} />}
+                  </button>
+                </div>
+                {aiConfig.apiKey && (
+                  <p style={{ fontSize: '0.78rem', color: '#22c55e', marginTop: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                    <Check size={12} /> Chave configurada
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* SEÇÃO: APARÊNCIA */}
+            <div className="admin-section">
+              <div className="admin-section-title">
+                <Palette size={16} />
+                <span>Aparência</span>
+              </div>
+              <div className="color-grid" style={{ marginBottom: '1.5rem' }}>
+                {[
+                  { label: 'Cor Principal', key: 'primary' as const, val: theme.primary },
+                  { label: 'Fundo', key: 'bgMain' as const, val: theme.bgMain },
+                  { label: 'Cards', key: 'bgCard' as const, val: theme.bgCard },
+                  { label: 'Texto', key: 'textMain' as const, val: theme.textMain },
+                ].map(({ label, key, val }) => (
+                  <div className="form-group" key={key} style={{ marginBottom: 0 }}>
+                    <label className="form-label">{label}</label>
+                    <div className="color-input-wrapper">
+                      <input type="color" value={val} onChange={e => updateTheme({ [key]: e.target.value })} />
+                      <input
+                        type="text"
+                        value={val}
+                        maxLength={7}
+                        onChange={e => {
+                          const v = e.target.value;
+                          if (/^#[0-9a-fA-F]{0,6}$/.test(v)) updateTheme({ [key]: v });
+                        }}
+                        style={{ background: 'transparent', border: 'none', outline: 'none', fontSize: '0.85rem', fontFamily: 'monospace', width: '80px', opacity: 0.8 }}
+                      />
+                    </div>
+                  </div>
+                ))}
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                <label className="form-label" style={{ marginBottom: 0 }}>🎨 Presets de Cores</label>
-                <button className="btn" style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem', background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)' }} onClick={savePreset}>
-                  <Plus size={14} style={{ marginRight: '0.4rem' }} /> Salvar Atual
+                <label className="form-label" style={{ marginBottom: 0, opacity: 0.7, fontSize: '0.85rem' }}>Presets salvos</label>
+                <button className="btn btn-primary" style={{ padding: '0.4rem 0.9rem', fontSize: '0.8rem' }} onClick={savePreset}>
+                  <Plus size={13} /> Salvar Tema Atual
                 </button>
               </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
                 {visibleThemePresets.map(p => (
                   <div key={p.id} className={`preset-tag ${theme.primary === p.config.primary && theme.bgMain === p.config.bgMain ? 'active' : ''}`} onClick={() => applyPreset(p)}>
-                    <div className="preset-dot" style={{ background: p.config.primary }} />
-                    {p.name}
+                    <div style={{ width: 24, height: 24, borderRadius: '6px', background: `linear-gradient(135deg, ${p.config.primary}, ${p.config.bgMain})`, border: '1px solid rgba(255,255,255,0.15)', flexShrink: 0 }} />
+                    <span style={{ fontSize: '0.82rem' }}>{p.name}</span>
                     {p.id !== DEFAULT_PRESET_ID && (
-                      <Trash2 size={12} onClick={(e) => { e.stopPropagation(); deletePreset(p.id); }} style={{ opacity: 0.5 }} />
+                      <Trash2 size={12} onClick={(e) => { e.stopPropagation(); deletePreset(p.id); }} style={{ opacity: 0.45, cursor: 'pointer', marginLeft: '0.2rem' }} />
                     )}
                   </div>
                 ))}
-                {themePresets.length === 0 && <p style={{ fontSize: '0.85rem', opacity: 0.5, fontStyle: 'italic' }}>O preset Padrao fica sempre disponivel.</p>}
               </div>
             </div>
-            <div style={{ borderTop: '1px solid var(--border)', paddingTop: '2rem' }}>
-              <label className="form-group"><label>📚 Gestão de Matérias</label>
-                <div style={{ display: 'flex', gap: '0.8rem' }}>
-                  <input className="form-input" placeholder="Nova..." value={newSubjectName} onChange={e => setNewSubjectName(e.target.value)} />
-                  <button className="btn btn-primary" onClick={addSubject}>Add</button>
+
+            {/* SEÇÃO: BACKUP */}
+            <div className="admin-section">
+              <div className="admin-section-title">
+                <Database size={16} />
+                <span>Backup do Drive</span>
+              </div>
+
+              {/* Filtro de matérias */}
+              <div style={{ marginBottom: '1rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
+                  <label className="form-label" style={{ marginBottom: 0, fontSize: '0.82rem', opacity: 0.7 }}>Matérias a exportar</label>
+                  <button
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.75rem', opacity: 0.55, color: 'var(--text-main)', textDecoration: 'underline', padding: 0 }}
+                    onClick={() => setExportSubjects(activeExportSubjects.length === subjects.length ? [] : null)}
+                  >
+                    {activeExportSubjects.length === subjects.length ? 'Desmarcar todas' : 'Marcar todas'}
+                  </button>
                 </div>
-              </label>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem', marginTop: '1.2rem' }}>
-                {subjects.map(s => <span key={s} className="tag" style={{ padding: '0.4rem 1rem' }}>{s} {!SYSTEM_SUBJECTS.includes(s) && <Trash2 size={14} onClick={() => removeSubject(s)} style={{ cursor: 'pointer' }} />}</span>)}
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  {subjects.map(s => {
+                    const checked = activeExportSubjects.includes(s);
+                    return (
+                      <label key={s} style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', fontSize: '0.82rem', padding: '0.3rem 0.75rem', borderRadius: '999px', border: `1px solid ${checked ? 'var(--primary)' : 'rgba(255,255,255,0.12)'}`, background: checked ? 'rgba(99,102,241,0.15)' : 'transparent', transition: 'all 0.2s', userSelect: 'none' }}>
+                        <input type="checkbox" checked={checked} onChange={() => toggleExportSubject(s)} style={{ accentColor: 'var(--primary)', width: '13px', height: '13px' }} />
+                        {s}
+                      </label>
+                    );
+                  })}
+                  {subjects.length === 0 && <span style={{ fontSize: '0.8rem', opacity: 0.45, fontStyle: 'italic' }}>Nenhuma matéria cadastrada.</span>}
+                </div>
+              </div>
+
+              {/* Filtro de presets */}
+              <div style={{ marginBottom: '1.2rem' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer', fontSize: '0.82rem', userSelect: 'none' }}>
+                  <input
+                    type="checkbox"
+                    checked={exportIncludePresets}
+                    onChange={e => setExportIncludePresets(e.target.checked)}
+                    style={{ accentColor: 'var(--primary)', width: '14px', height: '14px' }}
+                  />
+                  <span style={{ opacity: 0.8 }}>Incluir presets de tema ({visibleThemePresets.length})</span>
+                </label>
+              </div>
+
+              <div style={{ display: 'flex', gap: '0.8rem', flexWrap: 'wrap' }}>
+                <button
+                  className="btn"
+                  style={{ border: '1px solid var(--border)', background: 'transparent', flex: 1, opacity: activeExportSubjects.length === 0 ? 0.45 : 1 }}
+                  onClick={exportDrive}
+                  disabled={isExportingDrive || activeExportSubjects.length === 0}
+                  title={activeExportSubjects.length === 0 ? 'Selecione ao menos uma matéria' : ''}
+                >
+                  <Download size={16} />{isExportingDrive ? 'Exportando...' : `Exportar Drive${activeExportSubjects.length < subjects.length ? ` (${activeExportSubjects.length}/${subjects.length})` : ''}`}
+                </button>
+                <button className="btn btn-primary" style={{ flex: 1 }} onClick={() => importDriveInputRef.current?.click()} disabled={isImportingDrive}>
+                  <Upload size={16} />{isImportingDrive ? 'Importando...' : 'Importar Drive'}
+                </button>
+                <input ref={importDriveInputRef} type="file" accept=".zip,.json,.pdf" multiple onChange={importDrive} style={{ display: 'none' }} />
+              </div>
+            </div>
+
+            {/* SEÇÃO: MATÉRIAS */}
+            <div className="admin-section" style={{ marginBottom: 0 }}>
+              <div className="admin-section-title">
+                <BookOpen size={16} />
+                <span>Gestão de Matérias</span>
+              </div>
+              <div style={{ display: 'flex', gap: '0.8rem', marginBottom: '1.2rem' }}>
+                <input
+                  className="form-input"
+                  placeholder="Nome da nova matéria..."
+                  value={newSubjectName}
+                  style={{ flex: 1, marginBottom: 0 }}
+                  onChange={e => setNewSubjectName(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && addSubject()}
+                />
+                <button className="btn btn-primary" onClick={addSubject}>
+                  <Plus size={16} /> Adicionar
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.6rem' }}>
+                {subjects.length === 0 && (
+                  <p style={{ fontSize: '0.85rem', opacity: 0.5, fontStyle: 'italic' }}>Nenhuma matéria cadastrada.</p>
+                )}
+                {subjects.map(s => (
+                  <span key={s} className="tag" style={{ padding: '0.4rem 0.8rem', gap: '0.5rem' }}>
+                    {s}
+                    <button
+                      onClick={() => removeSubject(s)}
+                      style={{ background: 'rgba(255,255,255,0.15)', border: 'none', borderRadius: '4px', cursor: 'pointer', display: 'flex', alignItems: 'center', padding: '2px', lineHeight: 1 }}
+                      title={`Remover ${s}`}
+                    >
+                      <X size={11} />
+                    </button>
+                  </span>
+                ))}
               </div>
             </div>
           </div>
@@ -668,51 +902,150 @@ function App() {
       {/* MODAL NOVO MATERIAL */}
       {showAddModal && (
         <div className="modal-overlay">
-          <div className="modal">
+          <div className="modal" style={{ maxWidth: '480px' }}>
             <div className="modal-header">
-              <h2>➕ Novo Material</h2>
-              <button className="modal-close" onClick={() => setShowAddModal(false)}><X size={20} /></button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                <div style={{ background: 'var(--primary)', borderRadius: '10px', padding: '6px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                  <Plus size={16} style={{ color: 'white' }} />
+                </div>
+                <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Novo Material</h2>
+              </div>
+              <button className="modal-close" onClick={() => { setShowAddModal(false); setFormErrors({}); }}><X size={20} /></button>
             </div>
-            <div className="form-group"><label>Título</label><input className="form-input" value={newMaterial.title} onChange={e => setNewMaterial({...newMaterial, title: e.target.value})} /></div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.5rem' }}>
-              <CustomSelect 
+
+            {/* TÍTULO */}
+            <div className="form-group">
+              <label className="form-label">Título</label>
+              <div style={{ position: 'relative' }}>
+                <FileText size={16} style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', opacity: 0.4 }} />
+                <input
+                  className="form-input"
+                  placeholder="Nome do material..."
+                  value={newMaterial.title}
+                  style={{ paddingLeft: '2.5rem', borderColor: formErrors.title ? '#ef4444' : undefined }}
+                  onChange={e => { setNewMaterial({...newMaterial, title: e.target.value}); if (formErrors.title) setFormErrors(p => ({...p, title: undefined})); }}
+                />
+              </div>
+              {formErrors.title && (
+                <p style={{ fontSize: '0.78rem', color: '#ef4444', marginTop: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <AlertCircle size={12} /> {formErrors.title}
+                </p>
+              )}
+            </div>
+
+            {/* MATÉRIA */}
+            <div style={{ marginBottom: '1.5rem' }}>
+              <CustomSelect
                 label="Matéria"
                 value={newMaterial.subject}
                 options={subjects.map(s => ({ value: s, label: s }))}
                 onChange={val => setNewMaterial({...newMaterial, subject: val})}
               />
-              <CustomSelect 
-                label="Tipo"
-                value={newMaterial.type}
-                options={[{value: 'video', label: 'Vídeo'}, {value: 'pdf', label: 'PDF'}, {value: 'link', label: 'Link'}]}
-                onChange={val => setNewMaterial({...newMaterial, type: val as 'video' | 'pdf' | 'link'})}
-              />
             </div>
+
+            {/* TIPO - CARD PICKER */}
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label className="form-label">Tipo</label>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0.75rem' }}>
+                {([
+                  { value: 'video', label: 'Vídeo', icon: <Video size={24} />, color: '#ef4444', bg: 'rgba(239,68,68,0.12)', border: 'rgba(239,68,68,0.35)' },
+                  { value: 'pdf', label: 'PDF', icon: <BookOpen size={24} />, color: '#6366f1', bg: 'rgba(99,102,241,0.12)', border: 'rgba(99,102,241,0.35)' },
+                  { value: 'link', label: 'Link', icon: <Globe size={24} />, color: '#22c55e', bg: 'rgba(34,197,94,0.12)', border: 'rgba(34,197,94,0.35)' },
+                ] as const).map(opt => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setNewMaterial({...newMaterial, type: opt.value})}
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '0.5rem',
+                      padding: '1rem 0.5rem',
+                      borderRadius: '1rem',
+                      border: `2px solid ${newMaterial.type === opt.value ? opt.border : 'var(--border)'}`,
+                      background: newMaterial.type === opt.value ? opt.bg : 'rgba(255,255,255,0.02)',
+                      cursor: 'pointer',
+                      transition: 'all 0.2s',
+                      color: newMaterial.type === opt.value ? opt.color : 'inherit',
+                    }}
+                  >
+                    <div style={{
+                      width: 44, height: 44, borderRadius: '12px',
+                      background: newMaterial.type === opt.value ? opt.bg : 'rgba(255,255,255,0.05)',
+                      border: `1px solid ${newMaterial.type === opt.value ? opt.border : 'transparent'}`,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      color: newMaterial.type === opt.value ? opt.color : 'rgba(255,255,255,0.4)',
+                      transition: 'all 0.2s',
+                    }}>
+                      {opt.icon}
+                    </div>
+                    <span style={{ fontSize: '0.8rem', fontWeight: 600, opacity: newMaterial.type === opt.value ? 1 : 0.5 }}>{opt.label}</span>
+                    {newMaterial.type === opt.value && (
+                      <div style={{ width: 6, height: 6, borderRadius: '50%', background: opt.color }} />
+                    )}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* LINK / URL */}
             <div className="form-group">
-              <label>{newMaterial.type === 'pdf' ? 'Arquivo PDF / Link' : 'Link / URL'}</label>
-              <div style={{ display: 'flex', gap: '0.8rem' }}>
-                <input 
-                  className="form-input" 
-                  style={{ flex: 1 }}
-                  placeholder={newMaterial.type === 'pdf' ? 'Cole o link ou suba um arquivo' : newMaterial.type === 'link' ? 'Cole o link do site aqui' : 'Cole o link aqui'}
-                  value={newMaterial.url} 
-                  onChange={e => setNewMaterial({...newMaterial, url: e.target.value})} 
-                />
+              <label className="form-label">
+                {newMaterial.type === 'pdf' ? 'Arquivo PDF ou Link' : 'Link / URL'}
+              </label>
+              <div style={{ display: 'flex', gap: '0.6rem' }}>
+                <div style={{ position: 'relative', flex: 1 }}>
+                  <Link2 size={16} style={{ position: 'absolute', left: '1rem', top: '50%', transform: 'translateY(-50%)', opacity: 0.4 }} />
+                  <input
+                    className="form-input"
+                    style={{ paddingLeft: '2.5rem', borderColor: formErrors.url ? '#ef4444' : undefined }}
+                    placeholder={newMaterial.type === 'pdf' ? 'Cole o link ou use o botão →' : newMaterial.type === 'link' ? 'https://site.com' : 'https://youtube.com/watch?v=...'}
+                    value={newMaterial.url}
+                    onChange={e => { setNewMaterial({...newMaterial, url: e.target.value}); if (formErrors.url) setFormErrors(p => ({...p, url: undefined})); }}
+                  />
+                </div>
                 {newMaterial.type === 'pdf' && (
-                  <label className="btn btn-primary" style={{ padding: '0.75rem', display: 'flex', alignItems: 'center', cursor: 'pointer', position: 'relative' }}>
-                    <Upload size={20} />
-                    <input 
-                      type="file" 
-                      accept=".pdf" 
-                      onChange={handleFileUpload} 
-                      style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer', width: '100%' }}
-                    />
+                  <label
+                    className="btn btn-primary"
+                    style={{ padding: '0 1rem', display: 'flex', alignItems: 'center', gap: '0.4rem', cursor: 'pointer', position: 'relative', whiteSpace: 'nowrap', fontSize: '0.85rem' }}
+                    title="Enviar arquivo PDF"
+                  >
+                    {isUploading ? (
+                      <span style={{ opacity: 0.7 }}>Enviando...</span>
+                    ) : (
+                      <><Upload size={16} /> Upload</>
+                    )}
+                    <input type="file" accept=".pdf" onChange={handleFileUpload} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer', width: '100%' }} />
                   </label>
                 )}
               </div>
-              {isUploading && <p style={{ fontSize: '0.8rem', opacity: 0.7, marginTop: '0.4rem' }}>Enviando arquivo...</p>}
+              {formErrors.url && (
+                <p style={{ fontSize: '0.78rem', color: '#ef4444', marginTop: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <AlertCircle size={12} /> {formErrors.url}
+                </p>
+              )}
+              {isUploading && !formErrors.url && (
+                <p style={{ fontSize: '0.78rem', opacity: 0.6, marginTop: '0.4rem' }}>Enviando arquivo para o servidor...</p>
+              )}
+              {newMaterial.url && newMaterial.type === 'pdf' && !isUploading && (
+                <p style={{ fontSize: '0.78rem', color: '#22c55e', marginTop: '0.4rem', display: 'flex', alignItems: 'center', gap: '0.3rem' }}>
+                  <Check size={12} /> Arquivo pronto
+                </p>
+              )}
             </div>
-            <button className="btn btn-primary" style={{ width: '100%' }} onClick={addMaterial}>Adicionar</button>
+
+            {/* BOTÃO */}
+            <button
+              className="btn btn-primary"
+              style={{ width: '100%', justifyContent: 'center', fontSize: '1rem', padding: '0.9rem', marginTop: '0.5rem' }}
+              onClick={addMaterial}
+              disabled={isUploading}
+            >
+              <Plus size={18} />
+              Adicionar Material
+            </button>
           </div>
         </div>
       )}
@@ -726,9 +1059,28 @@ function App() {
               <button className="modal-close" onClick={() => setPlayingMaterial(null)}><X size={20} /></button>
             </div>
             {playingMaterial.type === 'video' ? (
-              <div style={{ position: 'relative', paddingBottom: '56.25%', height: 0, background: 'black', borderRadius: '1.5rem', overflow: 'hidden' }}>
-                <iframe src={getEmbedUrl(playingMaterial.url)} frameBorder="0" allowFullScreen allow="autoplay" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}></iframe>
-              </div>
+              (() => {
+                const embedUrl = getEmbedUrl(playingMaterial.url);
+                const isYoutube = embedUrl.includes('youtube.com/embed/');
+                return isYoutube ? (
+                  <div style={{ position: 'relative', paddingBottom: '56.25%', height: 0, background: 'black', borderRadius: '1.5rem', overflow: 'hidden' }}>
+                    <iframe src={embedUrl} frameBorder="0" allowFullScreen allow="autoplay" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}></iframe>
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '1rem', padding: '3rem', background: 'rgba(0,0,0,0.3)', borderRadius: '1.5rem', minHeight: '200px', textAlign: 'center' }}>
+                    <Video size={48} style={{ opacity: 0.35 }} />
+                    <p style={{ opacity: 0.6, fontSize: '0.9rem', margin: 0 }}>
+                      URL inválida ou não reconhecida como YouTube.<br />
+                      <span style={{ fontSize: '0.78rem', fontFamily: 'monospace', opacity: 0.5, wordBreak: 'break-all' }}>{playingMaterial.url || '(vazio)'}</span>
+                    </p>
+                    {playingMaterial.url && (
+                      <a href={playingMaterial.url} target="_blank" rel="noreferrer" className="btn btn-primary" style={{ padding: '0.5rem 1.5rem', fontSize: '0.85rem' }}>
+                        Abrir link externo
+                      </a>
+                    )}
+                  </div>
+                );
+              })()
             ) : (
               <div style={{ background: 'rgba(0,0,0,0.2)', borderRadius: '1.5rem', overflow: 'hidden', minHeight: '70vh' }}>
                 <iframe src={playingMaterial.url} frameBorder="0" style={{ width: '100%', height: '70vh' }}></iframe>

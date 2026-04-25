@@ -335,3 +335,24 @@ body {
   border-radius: 50%;
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
+
+/* Admin Panel Sections */
+.admin-section {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--border);
+  border-radius: 1.25rem;
+  padding: 1.5rem;
+  margin-bottom: 1rem;
+}
+
+.admin-section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.6;
+  margin-bottom: 1.25rem;
+}
