@@ -67,4 +67,3 @@ Para acessar as configurações e o Agente de IA:
 *   `exports/`: Pasta temporária para geração de backups do drive.
 
 ---
-*Nota: Este projeto é para uso estritamente pessoal e local.*

@@ -95,6 +95,8 @@ function App() {
   const [selectedSubject, setSelectedSubject] = useState('Todas')
   const [selectedType, setSelectedType] = useState<'todos' | 'video' | 'pdf' | 'link'>('todos')
   const [playingMaterial, setPlayingMaterial] = useState<Material | null>(null)
+  const [currentPage, setCurrentPage] = useState(1)
+  const ITEMS_PER_PAGE = 100;
   
   const [aiPrompt, setAiPrompt] = useState('')
   const [isAiLoading, setIsAiLoading] = useState(false)
@@ -121,14 +123,20 @@ function App() {
 
     setIsUploading(true);
     try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result || ''));
-        reader.onerror = () => reject(new Error('Falha ao ler o PDF.'));
-        reader.readAsDataURL(file);
+      const formData = new FormData();
+      formData.append('pdf', file);
+
+      const res = await fetch(`${API_URL}/upload`, {
+        method: 'POST',
+        body: formData,
       });
 
-      setNewMaterial({ ...newMaterial, url: dataUrl });
+      if (!res.ok) {
+        throw new Error('Falha ao enviar arquivo para o servidor.');
+      }
+
+      const data = await res.json();
+      setNewMaterial({ ...newMaterial, url: data.url });
     } catch (error) {
       console.error('Erro ao fazer upload:', error);
       alert('Erro ao fazer upload do arquivo.');
@@ -431,6 +439,16 @@ function App() {
     return matchesSearch && matchesSubject && matchesType
   })
 
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, selectedSubject, selectedType]);
+
+  const totalPages = Math.ceil(filteredMaterials.length / ITEMS_PER_PAGE);
+  const paginatedMaterials = filteredMaterials.slice(
+    (currentPage - 1) * ITEMS_PER_PAGE,
+    currentPage * ITEMS_PER_PAGE
+  );
+
   return (
     <div className="app-container">
       <aside className="sidebar">
@@ -477,7 +495,7 @@ function App() {
         )}
 
         <div className="grid">
-          {filteredMaterials.map(m => (
+          {paginatedMaterials.map(m => (
             <div key={m.id} className="card">
               <div
                 style={{ background: 'rgba(0,0,0,0.1)', height: '160px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: m.type === 'link' ? 'default' : 'pointer' }}
@@ -522,6 +540,36 @@ function App() {
         {filteredMaterials.length === 0 && (
           <div className="empty-state">
             Nenhum material encontrado para a busca/filtro atual.
+          </div>
+        )}
+
+        {totalPages > 1 && (
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', marginTop: '2.5rem', marginBottom: '2rem' }}>
+            <button 
+              className="btn" 
+              disabled={currentPage === 1}
+              onClick={() => {
+                setCurrentPage(prev => Math.max(1, prev - 1));
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', opacity: currentPage === 1 ? 0.5 : 1 }}
+            >
+              Anterior
+            </button>
+            <span style={{ display: 'flex', alignItems: 'center', padding: '0 1rem', background: 'var(--bg-card)', borderRadius: '0.5rem', border: '1px solid var(--border)' }}>
+              Página {currentPage} de {totalPages}
+            </span>
+            <button 
+              className="btn" 
+              disabled={currentPage === totalPages}
+              onClick={() => {
+                setCurrentPage(prev => Math.min(totalPages, prev + 1));
+                window.scrollTo({ top: 0, behavior: 'smooth' });
+              }}
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', opacity: currentPage === totalPages ? 0.5 : 1 }}
+            >
+              Próxima
+            </button>
           </div>
         )}
       </main>
