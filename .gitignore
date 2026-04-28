@@ -11,6 +11,11 @@ findings.md
 progress.md
 claude.md
 gemini.md
+project_constitution.md
+hypothesis_backlog.md
+learnings.md
+experiments.md
+.agents/
 architecture/
 tools/
 .env
