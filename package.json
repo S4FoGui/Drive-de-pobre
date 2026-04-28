@@ -1,12 +1,54 @@
 {
-  "name": "drive-de-pobre-server",
+  "name": "drive-de-pobre",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "server": "node server.js",
+    "build:frontend": "cd frontend && npm install && npm run build",
+    "build:linux": "npm run build:frontend && electron-builder --linux",
+    "build:windows": "npm run build:frontend && electron-builder --windows",
+    "postbuild:linux": "mv dist-electron/*.deb dist-electron/*.AppImage dist-electron/*.pacman ./ || true",
+    "postbuild:windows": "mv dist-electron/*.exe ./ || true"
+  },
   "dependencies": {
     "adm-zip": "^0.5.17",
     "archiver": "^7.0.1",
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "multer": "^1.4.5-lts.1"
+  },
+  "build": {
+    "appId": "com.s4fogui.drivedepobre",
+    "productName": "Drive de Pobre",
+    "mac": {
+      "category": "public.app-category.productivity"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office",
+      "icon": "assets/icon.png"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.ico"
+    },
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "main.js",
+      "server.js",
+      "preload.js",
+      "assets/**/*",
+      "frontend/dist/**/*",
+      "package.json"
+    ]
+  },
+  "devDependencies": {
+    "electron": "^41.3.0",
+    "electron-builder": "^26.8.1"
   }
 }

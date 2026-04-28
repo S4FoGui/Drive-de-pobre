@@ -1,9 +1,9 @@
 :root {
-  --primary: #6366f1;
-  --bg-main: #0f172a;
-  --bg-card: #1e293b;
-  --text-main: #f8fafc;
-  --border: rgba(255, 255, 255, 0.1);
+  --primary: #5865F2; /* Discord Blurple */
+  --bg-main: #313338; /* Discord Main Background */
+  --bg-card: #2b2d31; /* Discord Sidebar Background */
+  --text-main: #dbdee1; /* Discord Text */
+  --border: rgba(0, 0, 0, 0.2);
 }
 
 /* Reset Global */
@@ -18,9 +18,93 @@
 body { 
   background: var(--bg-main) !important; 
   transition: background 0.3s ease;
+  overflow: hidden; /* Prevent body scroll */
 }
 
-.app-container { display: flex; min-height: 100vh; }
+/* Hide scrollbar globally */
+::-webkit-scrollbar {
+  display: none;
+}
+
+
+/* Custom Title Bar */
+.titlebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 38px;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  z-index: 9999;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.titlebar-drag {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-left: 1rem;
+  -webkit-app-region: drag;
+}
+
+.titlebar-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+}
+
+.titlebar-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  opacity: 0.5;
+  letter-spacing: 0.02em;
+}
+
+.titlebar-controls {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  height: 100%;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-btn {
+  background: none !important;
+  border: none !important;
+  width: 46px;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0.6;
+  transition: all 0.15s;
+  -webkit-app-region: no-drag;
+}
+
+.titlebar-btn:hover {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+.titlebar-btn-close:hover {
+  background: #ef4444 !important;
+  opacity: 1;
+}
+
+.app-container { 
+  display: flex; 
+  height: 100vh; 
+  padding-top: 38px; 
+  overflow: hidden; 
+}
 
 /* Sidebar */
 .sidebar {
@@ -161,7 +245,12 @@ body {
   flex: 1;
   padding: 2.5rem;
   overflow-y: auto;
-  height: 100vh;
+  height: calc(100vh - 38px);
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE/Edge */
+}
+.main-content::-webkit-scrollbar {
+  display: none;
 }
 
 .grid {

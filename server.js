@@ -8,17 +8,23 @@ const AdmZip = require('adm-zip');
 
 const app = express();
 const PORT = 3001;
+
+// FRONTEND_DIST is static, so it stays in __dirname (inside app.asar)
 const FRONTEND_DIST = path.join(__dirname, 'frontend/dist');
-const DB_FILE = path.join(__dirname, 'database.json');
-const PDF_DIR = path.join(__dirname, 'uploads/pdfs');
-const EXPORTS_DIR = path.join(__dirname, 'exports');
-const GENERAL_LINKS_DIR = path.join(__dirname, 'uploads/links-gerais');
-const VIDEO_LINKS_DIR = path.join(__dirname, 'uploads/links-video');
+
+// Mutable paths must use USER_DATA_PATH when running via Electron, to avoid read-only errors
+const basePath = process.env.USER_DATA_PATH || __dirname;
+const DB_FILE = path.join(basePath, 'database.json');
+const PDF_DIR = path.join(basePath, 'uploads/pdfs');
+const EXPORTS_DIR = path.join(basePath, 'exports');
+const GENERAL_LINKS_DIR = path.join(basePath, 'uploads/links-gerais');
+const VIDEO_LINKS_DIR = path.join(basePath, 'uploads/links-video');
 const GENERAL_LINKS_FILE = path.join(GENERAL_LINKS_DIR, 'links.json');
 const VIDEO_LINKS_FILE = path.join(VIDEO_LINKS_DIR, 'links.json');
 const DEFAULT_DATA = {
   materials: [],
   subjects: ['Matemática', 'Física', 'Química'],
+  password: 'admin',
   theme: {
     primary: '#6366f1',
     bgMain: '#0f172a',
@@ -375,6 +381,15 @@ app.post('/save', handleSave);
 app.post('/api/save', handleSave);
 app.post('/api/export-drive', handleExportDrive);
 app.post('/api/export-drive-zip', handleExportDriveZip);
+app.post('/api/change-password', (req, res) => {
+  const { newPassword } = req.body;
+  if (!newPassword) return res.status(400).send('Nova senha não informada.');
+  
+  const data = readDatabase();
+  data.password = newPassword;
+  saveDatabase(data);
+  res.json({ ok: true, message: 'Senha alterada com sucesso.' });
+});
 app.post('/api/import-drive', importUpload.any(), handleImportDrive);
 app.use('/exports', express.static(EXPORTS_DIR));
 

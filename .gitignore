@@ -5,6 +5,19 @@ uploads/
 database.json
 server_output.txt
 .codex
+
+# Build and Dist
+dist-electron/
+**/dist-electron/
+dist/
+**/dist/
+frontend/dist/
+*.exe
+*.AppImage
+*.blockmap
+*.yml
+*.yaml
+
 # System Pilot Memory Files
 task_plan.md
 findings.md

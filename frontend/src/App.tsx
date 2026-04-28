@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import logo from './icon do drive de pobre.png'
 import agentIcon from '../elem.png'
 import {
-  Search, Folder, Plus, Trash2, Lock, LogOut, Video, Filter, X, Settings, Send, Sparkles, Upload, ChevronDown, Download, Link2, Eye, EyeOff, Check, Palette, Database, Bot, BookOpen, AlertCircle, FileText, Globe
+  Search, Folder, Plus, Trash2, Lock, LogOut, Video, Filter, X, Settings, Send, Sparkles, Upload, ChevronDown, Download, Link2, Eye, EyeOff, Check, Palette, Database, Bot, BookOpen, AlertCircle, AlertTriangle, FileText, Globe
 } from 'lucide-react'
 
 interface Material { id: string; title: string; subject: string; type: 'video' | 'pdf' | 'link'; url: string; }
@@ -70,6 +70,46 @@ function CustomSelect({ options, value, onChange, label }: { options: {value: st
   );
 }
 
+const extractJsonFromText = (text: string) => {
+  // Tenta encontrar um array primeiro (prioridade para batch actions)
+  const arrayMatch = text.match(/\[[\s\S]*\]/);
+  if (arrayMatch) {
+    let content = arrayMatch[0];
+    while (content.length > 0) {
+      try {
+        return JSON.parse(content);
+      } catch {
+        const lastIndex = content.lastIndexOf(']');
+        if (lastIndex <= 0) break;
+        content = content.substring(0, lastIndex);
+        const nextLastIndex = content.lastIndexOf(']');
+        if (nextLastIndex === -1) break;
+        content = content.substring(0, nextLastIndex + 1);
+      }
+    }
+  }
+
+  // Tenta encontrar um objeto único
+  const objectMatch = text.match(/\{[\s\S]*\}/);
+  if (objectMatch) {
+    let content = objectMatch[0];
+    while (content.length > 0) {
+      try {
+        return JSON.parse(content);
+      } catch {
+        const lastIndex = content.lastIndexOf('}');
+        if (lastIndex <= 0) break;
+        content = content.substring(0, lastIndex);
+        const nextLastIndex = content.lastIndexOf('}');
+        if (nextLastIndex === -1) break;
+        content = content.substring(0, nextLastIndex + 1);
+      }
+    }
+  }
+  
+  throw new Error("A IA não retornou um formato JSON válido que pudesse ser recuperado.");
+};
+
 function App() {
   const [materials, setMaterials] = useState<Material[]>([])
   const [subjects, setSubjects] = useState<string[]>(DEFAULT_SUBJECTS)
@@ -81,6 +121,7 @@ function App() {
   const [showLogin, setShowLogin] = useState(false)
   const [showAddModal, setShowAddModal] = useState(false)
   const [showAdminPanel, setShowAdminPanel] = useState(false)
+  const [confirmDialog, setConfirmDialog] = useState<{ message: string; onConfirm: () => void } | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [selectedSubject, setSelectedSubject] = useState('Todas')
   const [selectedType, setSelectedType] = useState<'todos' | 'video' | 'pdf' | 'link'>('todos')
@@ -97,8 +138,13 @@ function App() {
   const [showApiKey, setShowApiKey] = useState(false)
   const [savedIndicator, setSavedIndicator] = useState(false)
   const [newSubjectName, setNewSubjectName] = useState('')
+  const [showPresetModal, setShowPresetModal] = useState(false)
+  const [presetNameInput, setPresetNameInput] = useState('')
   const [newMaterial, setNewMaterial] = useState({ title: '', subject: '', type: 'video' as 'video' | 'pdf' | 'link', url: '' })
   const [formErrors, setFormErrors] = useState<{ title?: string; url?: string }>({})
+  const [storedPassword, setStoredPassword] = useState('admin')
+  const [newPasswordInput, setNewPasswordInput] = useState('')
+  const [isChangingPassword, setIsChangingPassword] = useState(false)
   const visibleThemePresets = [DEFAULT_PRESET, ...themePresets.filter(p => p.id !== DEFAULT_PRESET_ID)]
   const importDriveInputRef = useRef<HTMLInputElement | null>(null)
   // Export filters
@@ -142,10 +188,11 @@ function App() {
     }
   };
 
-  const applyPersistedData = (data: Partial<PersistedData>) => {
+  const applyPersistedData = (data: Partial<PersistedData & { password?: string }>) => {
     if (Array.isArray(data.materials)) setMaterials(data.materials);
     if (Array.isArray(data.subjects)) setSubjects(mergeSubjects(data.subjects));
     if (data.theme) setTheme(data.theme);
+    if (data.password) setStoredPassword(data.password);
     if (Array.isArray(data.themePresets)) setThemePresets(data.themePresets.filter(p => p.id !== DEFAULT_PRESET_ID));
   };
 
@@ -178,6 +225,24 @@ function App() {
     const savedAi = localStorage.getItem('dp_ai_config');
     if (savedAi) setAiConfig(JSON.parse(savedAi));
     if (localStorage.getItem('dp_admin') === 'true') setIsAdmin(true);
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey) {
+        if (e.key === '=' || e.key === '+') {
+          e.preventDefault();
+          api?.zoomIn();
+        } else if (e.key === '-') {
+          e.preventDefault();
+          api?.zoomOut();
+        } else if (e.key === '0') {
+          e.preventDefault();
+          api?.zoomReset();
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
 
   const saveData = (m: Material[], s: string[], t: ThemeConfig, presets: ThemePreset[]) => {
@@ -199,6 +264,29 @@ function App() {
       setExportSubjects(current.filter(s => s !== sub));
     } else {
       setExportSubjects([...current, sub]);
+    }
+  };
+
+  const changePassword = async () => {
+    if (!newPasswordInput) return alert('Digite a nova senha');
+    setIsChangingPassword(true);
+    try {
+      const res = await fetch(`${API_URL}/change-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ newPassword: newPasswordInput })
+      });
+      if (res.ok) {
+        setStoredPassword(newPasswordInput);
+        setNewPasswordInput('');
+        alert('Senha alterada com sucesso!');
+      } else {
+        alert('Erro ao alterar senha');
+      }
+    } catch (error) {
+      alert('Erro de conexão');
+    } finally {
+      setIsChangingPassword(false);
     }
   };
 
@@ -273,16 +361,17 @@ function App() {
   };
 
   const savePreset = () => {
-    const name = prompt('Nome do preset:');
-    if (!name) return;
+    if (!presetNameInput.trim()) return;
     const newPreset: ThemePreset = {
       id: Date.now().toString(),
-      name,
+      name: presetNameInput.trim(),
       config: { ...theme }
     };
     const up = [...themePresets, newPreset];
     setThemePresets(up);
     saveData(materials, subjects, theme, up);
+    setShowPresetModal(false);
+    setPresetNameInput('');
   };
 
   const applyPreset = (preset: ThemePreset) => {
@@ -292,11 +381,14 @@ function App() {
 
   const deletePreset = (id: string) => {
     if (id === DEFAULT_PRESET_ID) return;
-    if (window.confirm('Excluir preset?')) {
-      const up = themePresets.filter(p => p.id !== id);
-      setThemePresets(up);
-      saveData(materials, subjects, theme, up);
-    }
+    setConfirmDialog({
+      message: 'Excluir este preset de tema?',
+      onConfirm: () => {
+        const up = themePresets.filter(p => p.id !== id);
+        setThemePresets(up);
+        saveData(materials, subjects, theme, up);
+      }
+    });
   };
 
   const addSubject = () => {
@@ -311,25 +403,28 @@ function App() {
     const msg = count > 0
       ? `Excluir a matéria "${sub}" e seus ${count} material(is)? Esta ação não pode ser desfeita.`
       : `Excluir a matéria "${sub}"?`;
-    if (window.confirm(msg)) {
-      // Remove PDFs do servidor
-      subMaterials.forEach(m => {
-        if (m.type === 'pdf' && m.url) {
-          fetch(`${API_URL}/delete-file`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: m.url }),
-          }).catch(err => console.error('Erro ao deletar arquivo:', err));
-        }
-      });
-      const newMaterials = materials.filter(m => m.subject !== sub);
-      const newSubjects = subjects.filter(s => s !== sub);
-      setMaterials(newMaterials);
-      setSubjects(newSubjects);
-      saveData(newMaterials, newSubjects, theme, themePresets);
-      // Se estava filtrando por essa matéria, volta para "Todas"
-      if (selectedSubject === sub) setSelectedSubject('Todas');
-    }
+    setConfirmDialog({
+      message: msg,
+      onConfirm: () => {
+        // Remove PDFs do servidor
+        subMaterials.forEach(m => {
+          if (m.type === 'pdf' && m.url) {
+            fetch(`${API_URL}/delete-file`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: m.url }),
+            }).catch(err => console.error('Erro ao deletar arquivo:', err));
+          }
+        });
+        const newMaterials = materials.filter(m => m.subject !== sub);
+        const newSubjects = subjects.filter(s => s !== sub);
+        setMaterials(newMaterials);
+        setSubjects(newSubjects);
+        saveData(newMaterials, newSubjects, theme, themePresets);
+        // Se estava filtrando por essa matéria, volta para "Todas"
+        if (selectedSubject === sub) setSelectedSubject('Todas');
+      }
+    });
   };
 
   const addMaterial = () => {
@@ -338,32 +433,149 @@ function App() {
     if (!newMaterial.url.trim()) errors.url = 'O link ou arquivo é obrigatório.';
     if (Object.keys(errors).length > 0) { setFormErrors(errors); return; }
     setFormErrors({});
-    const up = [...materials, { ...newMaterial, id: Date.now().toString() }];
-    setMaterials(up); saveData(up, subjects, theme, themePresets); setShowAddModal(false);
+
+    // Auto-detect YouTube for manual addition
+    const finalMaterial = { ...newMaterial };
+    if (isYouTubeUrl(finalMaterial.url)) {
+      finalMaterial.type = 'video';
+    }
+
+    // Auto-create subject if it doesn't exist
+    let updatedSubjects = [...subjects];
+    if (finalMaterial.subject && !updatedSubjects.includes(finalMaterial.subject)) {
+      updatedSubjects = mergeSubjects([...updatedSubjects, finalMaterial.subject]);
+      setSubjects(updatedSubjects);
+    }
+
+    const up = [...materials, { ...finalMaterial, id: Date.now().toString() }];
+    setMaterials(up); saveData(up, updatedSubjects, theme, themePresets); setShowAddModal(false);
     setNewMaterial({ title: '', subject: subjects[0] || '', type: 'video', url: '' });
   };
 
   const deleteMaterial = (id: string) => {
-    if (window.confirm('Excluir?')) {
-      const materialToDelete = materials.find(m => m.id === id);
-      const up = materials.filter(m => m.id !== id);
-      setMaterials(up); 
-      saveData(up, subjects, theme, themePresets);
+    setConfirmDialog({
+      message: 'Tem certeza que deseja excluir este material?',
+      onConfirm: () => {
+        const materialToDelete = materials.find(m => m.id === id);
+        const up = materials.filter(m => m.id !== id);
+        setMaterials(up); 
+        saveData(up, subjects, theme, themePresets);
 
-      if (materialToDelete?.type === 'pdf' && materialToDelete.url) {
-        fetch(`${API_URL}/delete-file`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url: materialToDelete.url })
-        }).catch(err => console.error('Erro ao deletar arquivo fisico:', err));
+        if (materialToDelete?.type === 'pdf' && materialToDelete.url) {
+          fetch(`${API_URL}/delete-file`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: materialToDelete.url })
+          }).catch(err => console.error('Erro ao deletar arquivo fisico:', err));
+        }
+      }
+    });
+  };
+
+  const extractLinks = (text: string) => {
+    const links: { title: string, url: string }[] = [];
+    let cleanedText = text;
+
+    const mdRegex = /\[(.*?)\]\((https?:\/\/[^\s\)]+)\)/g;
+    cleanedText = cleanedText.replace(mdRegex, (_match, title, url) => {
+      links.push({ title: title.trim() || 'Novo Material', url: url.trim() });
+      return '[LINK]';
+    });
+
+    const plainRegex = /(https?:\/\/[^\s]+)/g;
+    cleanedText = cleanedText.replace(plainRegex, (_match, url) => {
+      links.push({ title: 'Novo Material', url: url.trim() });
+      return '[LINK]';
+    });
+
+    return { links, cleanedText };
+  };
+
+  // Tenta detectar o nome da matéria localmente no texto do usuário
+  const detectSubjectLocally = (text: string): string | null => {
+    const lower = text.toLowerCase();
+    // Padrões comuns: "crie a pasta X", "adicione na pasta X", "na matéria X", "pasta X"
+    const patterns = [
+      /(?:cri[ea]r?|adicionar?|colocar?)\s+(?:a\s+)?(?:pasta|mat[ée]ria|folder)\s+["']?([\w\s-]+?)["']?(?:\s+e\s|\s*$|\s*\n)/i,
+      /(?:pasta|mat[ée]ria|folder)\s+["']?([\w\s-]+?)["']?(?:\s+e\s|\s*$|\s*\n)/i,
+      /(?:adicione?\s+(?:em|na|no|para)\s+)([\w\s-]+?)(?:\s*$|\s*\n|\s*#)/i,
+    ];
+    for (const pattern of patterns) {
+      const match = text.match(pattern);
+      if (match?.[1]) {
+        return match[1].trim();
       }
     }
+    // Tenta encontrar uma matéria existente mencionada no texto
+    for (const sub of subjects) {
+      if (lower.includes(sub.toLowerCase())) {
+        return sub;
+      }
+    }
+    return null;
   };
 
   const callAiAgent = async () => {
     if (!aiConfig.apiKey) return alert('API Key ausente!');
     setIsAiLoading(true);
-    const sys = `Admin Drive de Pobre. Materias: [${subjects.join(', ')}]. Materiais: [${materials.map(m => `${m.id}::${m.title}::${m.subject}::${m.type}::${m.url}`).join(' | ')}]. Ações disponíveis (JSON): {"action": "ADD_SUBJECT", "name": "N"}, {"action": "DELETE_SUBJECT", "name": "N"}, {"action": "ADD_MATERIAL", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "EDIT_MATERIAL", "id": "ID", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "DELETE_MATERIAL", "id": "ID"}. REGRAS: Para UMA ação responda com um único objeto JSON. Para MÚLTIPLAS ações responda com um array JSON [...]. Nunca inclua texto fora do JSON. Se nao souber o id do material, use "title" para localizar pelo titulo.`;
+
+    const { links: extractedLinks, cleanedText } = extractLinks(aiPrompt);
+    const isBatchMode = extractedLinks.length >= 3;
+
+    // Em batch mode, resolve 100% local — NUNCA chama a IA para batch
+    if (isBatchMode) {
+      try {
+        // Prioridade: 1) detectar do texto, 2) pasta selecionada na sidebar, 3) última pasta criada
+        let targetSubject = detectSubjectLocally(aiPrompt);
+        
+        if (!targetSubject && selectedSubject !== 'Todas') {
+          targetSubject = selectedSubject;
+        }
+        
+        if (!targetSubject && subjects.length > 0) {
+          targetSubject = subjects[subjects.length - 1]; // última pasta criada
+        }
+        
+        if (!targetSubject) {
+          targetSubject = 'Geral';
+        }
+        
+        let newSubjects = [...subjects];
+        if (!newSubjects.some(s => s.toLowerCase() === targetSubject!.toLowerCase())) {
+          newSubjects = mergeSubjects([...newSubjects, targetSubject]);
+        }
+        // Usa o nome exato da matéria existente ou o novo
+        const exactSubject = newSubjects.find(s => s.toLowerCase() === targetSubject!.toLowerCase()) || targetSubject;
+        const batchMaterials: Material[] = extractedLinks.map((link, idx) => ({
+          id: `${Date.now()}-${idx}-${Math.random().toString(16).slice(2, 8)}`,
+          title: link.title,
+          subject: exactSubject,
+          type: isYouTubeUrl(link.url) ? 'video' : 'link',
+          url: link.url
+        }));
+        const newMaterials = [...materials, ...batchMaterials];
+        setMaterials(newMaterials);
+        setSubjects(newSubjects);
+        saveData(newMaterials, newSubjects, theme, themePresets);
+        setAiPrompt('');
+        return;
+      } finally {
+        setIsAiLoading(false);
+      }
+    }
+
+    let sys = "";
+    let finalPrompt = aiPrompt;
+
+    if (isBatchMode) {
+      sys = `Admin Drive de Pobre. Materias: [${subjects.join(', ')}]. O usuário enviou ${extractedLinks.length} links que foram interceptados pelo sistema (substituídos por [LINK]). Identifique a matéria de destino. Retorne APENAS UM JSON: {"action": "BATCH_ADD", "subject": "NOME_DA_MATERIA"}. Se não souber, use "${subjects[0] || 'Geral'}". Não retorne mais nada.`;
+      // Enviar apenas as primeiras 5 linhas do texto limpo para economizar tokens
+      const lines = cleanedText.split('\n').filter(l => l.trim());
+      finalPrompt = lines.slice(0, 5).join('\n') + (lines.length > 5 ? `\n... (${lines.length} linhas no total)` : '');
+    } else {
+      sys = `Admin Drive de Pobre. Materias: [${subjects.join(', ')}]. Ações disponíveis (JSON): {"action": "ADD_SUBJECT", "name": "N"}, {"action": "DELETE_SUBJECT", "name": "N"}, {"action": "ADD_MATERIAL", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "EDIT_MATERIAL", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "DELETE_MATERIAL", "title": "T"}, {"action": "CLEAR_SUBJECT", "subject": "S"}, {"action": "REORDER_VIDEOS", "subject": "S"}, {"action": "MOVE_ALL", "fromSubject": "S", "toSubject": "S"}. REGRAS: Se o link for do YouTube, use type: "video". Para EDIT/DELETE, informe o "title" exato baseado no prompt do usuário para localizar. A ação CLEAR_SUBJECT apaga todos os vídeos de uma matéria. A ação MOVE_ALL move todos os materiais de uma matéria para outra. A ação REORDER_VIDEOS ordena os vídeos de uma matéria extraindo os números do título. Para UMA ação responda com um único JSON. Para MÚLTIPLAS, use array JSON [...]. Nunca inclua texto fora do JSON.`;
+    }
+
     try {
       const isOpenAICompat = aiConfig.provider === 'groq' || aiConfig.provider === 'openai';
       const openaiUrl = aiConfig.provider === 'groq'
@@ -385,8 +597,8 @@ function App() {
           },
           body: JSON.stringify(
             isOpenAICompat
-              ? { model: openaiModel, messages: [{ role: 'system', content: sys }, { role: 'user', content: aiPrompt }] }
-              : { contents: [{ parts: [{ text: sys + '\n' + aiPrompt }] }] }
+              ? { model: openaiModel, messages: [{ role: 'system', content: sys }, { role: 'user', content: finalPrompt }] }
+              : { contents: [{ parts: [{ text: sys + '\n' + finalPrompt }] }] }
           ),
         }
       );
@@ -404,22 +616,35 @@ function App() {
         throw new Error(blockReason ? `Resposta bloqueada: ${blockReason}` : 'A IA nao retornou texto utilizavel.');
       }
 
-      // Extrai JSON — suporta array [...] ou objeto único {...}
-      const jsonMatch = text.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
-      if (!jsonMatch) throw new Error('A IA nao retornou um JSON valido.');
+      // Extrai JSON robustamente
+      const parsed = extractJsonFromText(text);
+      let actions: Record<string, unknown>[] = Array.isArray(parsed) ? parsed : [parsed];
 
-      const parsed = JSON.parse(jsonMatch[0]);
-      const actions: Record<string, unknown>[] = Array.isArray(parsed) ? parsed : [parsed];
+      // SAFETY: Se estamos em batch mode (links extraídos) mas a IA não retornou BATCH_ADD,
+      // forçar BATCH_ADD para não perder as URLs reais
+      if (isBatchMode && extractedLinks.length > 0) {
+        const hasBatchAdd = actions.some(a => a.action === 'BATCH_ADD');
+        if (!hasBatchAdd) {
+          // Tenta extrair o subject da resposta da IA
+          const aiSubject = actions[0]?.subject || actions[0]?.name || '';
+          actions = [{ action: 'BATCH_ADD', subject: String(aiSubject || subjects[0] || 'Geral') }];
+        }
+      }
 
       // Aplica todas as ações em batch sobre snapshots locais
       let newMaterials = [...materials];
       let newSubjects = [...subjects];
 
+      const subjectCountsBefore: Record<string, number> = {};
+      materials.forEach(m => { subjectCountsBefore[m.subject] = (subjectCountsBefore[m.subject] || 0) + 1; });
+      const deletedFilesIds = new Set<string>();
+
       for (const act of actions) {
         const findMaterialId = () => {
           if (act.id) return String(act.id);
           if (act.title) {
-            const found = newMaterials.find(m => m.title.toLowerCase() === String(act.title).toLowerCase());
+            const searchTitle = String(act.title).toLowerCase().trim();
+            const found = newMaterials.find(m => m.title.toLowerCase().includes(searchTitle) || searchTitle.includes(m.title.toLowerCase()));
             return found?.id;
           }
           return undefined;
@@ -428,45 +653,104 @@ function App() {
         if (act.action === "ADD_SUBJECT") {
           newSubjects = mergeSubjects([...newSubjects, String(act.name || '')]);
 
+        } else if (act.action === "BATCH_ADD") {
+          const subject = String(act.subject || newSubjects[0] || '');
+          // Auto-criar a matéria se não existir
+          if (!newSubjects.some(s => s.toLowerCase() === subject.toLowerCase())) {
+            newSubjects = mergeSubjects([...newSubjects, subject]);
+          }
+          const batchMaterials: Material[] = extractedLinks.map((link, idx) => ({
+            id: `${Date.now()}-${idx}-${Math.random().toString(16).slice(2, 8)}`,
+            title: link.title,
+            subject,
+            type: isYouTubeUrl(link.url) ? 'video' : 'link',
+            url: link.url
+          }));
+          newMaterials = [...newMaterials, ...batchMaterials];
+
         } else if (act.action === "DELETE_SUBJECT") {
           const subName = String(act.name || '').trim();
           const found = newSubjects.find(s => s.toLowerCase() === subName.toLowerCase());
-          if (found) newSubjects = newSubjects.filter(s => s !== found);
+          if (found) {
+            newSubjects = newSubjects.filter(s => s !== found);
+            // Delete all materials in this subject
+            materials.filter(m => m.subject === found).forEach(m => deletedFilesIds.add(m.id));
+          }
 
         } else if (act.action === "ADD_MATERIAL") {
+          const url = String(act.url || '');
+          // Bloquear materiais com URL placeholder [LINK]
+          if (url === '[LINK]' || url === '' || url === 'undefined') continue;
+          const type = isYouTubeUrl(url) ? 'video' : ((act.type as 'video' | 'pdf' | 'link') || 'video');
+          const matSubject = String(act.subject || newSubjects[0] || '');
+          // Auto-criar a matéria se não existir
+          if (matSubject && !newSubjects.some(s => s.toLowerCase() === matSubject.toLowerCase())) {
+            newSubjects = mergeSubjects([...newSubjects, matSubject]);
+          }
           newMaterials = [...newMaterials, {
             id: `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`,
             title: String(act.title || ''),
-            subject: String(act.subject || newSubjects[0] || ''),
-            type: (act.type as 'video' | 'pdf' | 'link') || 'video',
-            url: String(act.url || ''),
+            subject: matSubject,
+            type,
+            url,
           }];
 
         } else if (act.action === "EDIT_MATERIAL") {
           const materialId = findMaterialId();
           if (materialId) {
+            const url = act.url ? String(act.url) : undefined;
+            const type = url && isYouTubeUrl(url) ? 'video' : (act.type ? act.type as 'video' | 'pdf' | 'link' : undefined);
+
             newMaterials = newMaterials.map(m => m.id === materialId ? {
               ...m,
               ...(act.title ? { title: String(act.title) } : {}),
               ...(act.subject ? { subject: String(act.subject) } : {}),
-              ...(act.type ? { type: act.type as 'video' | 'pdf' | 'link' } : {}),
-              ...(act.url ? { url: String(act.url) } : {}),
+              ...(type ? { type } : {}),
+              ...(url ? { url } : {}),
             } : m);
           }
 
         } else if (act.action === "DELETE_MATERIAL") {
           const materialId = findMaterialId();
           if (materialId) {
-            const materialToDelete = newMaterials.find(m => m.id === materialId);
-            newMaterials = newMaterials.filter(m => m.id !== materialId);
-            if (materialToDelete?.type === 'pdf' && materialToDelete.url) {
-              fetch(`${API_URL}/delete-file`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: materialToDelete.url })
-              }).catch(err => console.error('Erro ao deletar arquivo fisico:', err));
-            }
+            deletedFilesIds.add(materialId);
           }
+        } else if (act.action === "CLEAR_SUBJECT") {
+          const targetSubject = String(act.subject || '').toLowerCase();
+          materials.filter(m => m.subject.toLowerCase() === targetSubject).forEach(m => deletedFilesIds.add(m.id));
+        } else if (act.action === "MOVE_ALL") {
+          const fromSub = String(act.fromSubject || '').toLowerCase();
+          const toSub = String(act.toSubject || '');
+          if (toSub && !newSubjects.some(s => s.toLowerCase() === toSub.toLowerCase())) {
+            newSubjects = mergeSubjects([...newSubjects, toSub]);
+          }
+          const exactToSub = newSubjects.find(s => s.toLowerCase() === toSub.toLowerCase()) || toSub;
+          newMaterials = newMaterials.map(m => m.subject.toLowerCase() === fromSub ? { ...m, subject: exactToSub } : m);
+        } else if (act.action === "REORDER_VIDEOS") {
+          const targetSubject = String(act.subject || '').toLowerCase();
+          const subjectMats = newMaterials.filter(m => m.subject.toLowerCase() === targetSubject);
+          const otherMats = newMaterials.filter(m => m.subject.toLowerCase() !== targetSubject);
+          
+          subjectMats.sort((a, b) => {
+            const numA = parseInt(a.title.match(/\d+/)?.[0] || '0', 10);
+            const numB = parseInt(b.title.match(/\d+/)?.[0] || '0', 10);
+            return numA - numB;
+          });
+          
+          newMaterials = [...otherMats, ...subjectMats];
+        }
+      }
+
+      // Efetiva a deleção dos arquivos
+      for (const id of deletedFilesIds) {
+        const materialToDelete = newMaterials.find(m => m.id === id);
+        newMaterials = newMaterials.filter(m => m.id !== id);
+        if (materialToDelete?.type === 'pdf' && materialToDelete.url) {
+           fetch(`${API_URL}/delete-file`, {
+             method: 'POST',
+             headers: { 'Content-Type': 'application/json' },
+             body: JSON.stringify({ url: materialToDelete.url })
+           }).catch(err => console.error('Erro ao deletar arquivo fisico:', err));
         }
       }
 
@@ -479,6 +763,12 @@ function App() {
       const message = error instanceof Error ? error.message : 'Erro IA';
       alert(`Erro IA: ${message}`);
     } finally { setIsAiLoading(false); }
+  };
+
+  const isYouTubeUrl = (url: string) => {
+    if (!url) return false;
+    const lower = url.toLowerCase();
+    return lower.includes('youtube.com') || lower.includes('youtu.be');
   };
 
   const getEmbedUrl = (url: string) => {
@@ -521,8 +811,29 @@ function App() {
     currentPage * ITEMS_PER_PAGE
   );
 
+  const api = (window as any).electronAPI;
+
   return (
     <div className="app-container">
+      {/* Custom Title Bar */}
+      <div className="titlebar">
+        <div className="titlebar-drag">
+          <img src={logo} alt="Logo" className="titlebar-logo" />
+          <span className="titlebar-title">Drive de Pobre</span>
+        </div>
+        <div className="titlebar-controls">
+          <button className="titlebar-btn titlebar-btn-minimize" onClick={() => api?.minimize()} aria-label="Minimizar">
+            <svg width="12" height="12" viewBox="0 0 12 12"><rect y="5" width="12" height="2" rx="1" fill="currentColor"/></svg>
+          </button>
+          <button className="titlebar-btn titlebar-btn-maximize" onClick={() => api?.maximize()} aria-label="Maximizar">
+            <svg width="12" height="12" viewBox="0 0 12 12"><rect x="1" y="1" width="10" height="10" rx="2" stroke="currentColor" strokeWidth="1.5" fill="none"/></svg>
+          </button>
+          <button className="titlebar-btn titlebar-btn-close" onClick={() => api?.close()} aria-label="Fechar">
+            <svg width="12" height="12" viewBox="0 0 12 12"><path d="M2 2L10 10M10 2L2 10" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"/></svg>
+          </button>
+        </div>
+      </div>
+
       <aside className="sidebar">
         <h2 className="nav-item" style={{ fontSize: '1.5rem', opacity: 1, cursor: 'default', gap: '0.5rem' }}>
           <img src={logo} alt="Logo" style={{ width: '32px', height: '32px', borderRadius: '8px' }} /> 
@@ -530,10 +841,21 @@ function App() {
         </h2>
         <div className={`nav-item ${selectedSubject === 'Todas' ? 'active' : ''}`} onClick={() => setSelectedSubject('Todas')}><Filter size={20} /> Todas</div>
         {subjects.map(s => ( <div key={s} className={`nav-item ${selectedSubject === s ? 'active' : ''}`} onClick={() => setSelectedSubject(s)}><Folder size={20} /> {s}</div> ))}
-        <div style={{ marginTop: 'auto' }}>
+        <div style={{ marginTop: 'auto', paddingTop: '1rem', borderTop: '1px solid rgba(255,255,255,0.05)' }}>
           {isAdmin ? (
-            <><div className="nav-item" onClick={() => setShowAdminPanel(true)}><Settings size={20} /> Painel Admin</div><div className="nav-item" onClick={() => { setIsAdmin(false); localStorage.removeItem('dp_admin'); }}><LogOut size={20} /> Sair</div></>
-          ) : ( <div className="nav-item" onClick={() => setShowLogin(true)}><Lock size={20} /> Área Admin</div> )}
+            <>
+              <div className="nav-item" onClick={() => setShowAdminPanel(true)}>
+                <Settings size={20} /> Painel de Controle
+              </div>
+              <div className="nav-item" onClick={() => { setIsAdmin(false); localStorage.removeItem('dp_admin'); }} style={{ color: '#ff4d4d' }}>
+                <LogOut size={20} /> Sair do Admin
+              </div>
+            </>
+          ) : (
+            <div className="nav-item" onClick={() => setShowLogin(true)}>
+              <Lock size={20} /> Acesso Admin
+            </div>
+          )}
         </div>
       </aside>
 
@@ -563,6 +885,34 @@ function App() {
               <input className="form-input" placeholder="Ex: Adicione Biologia..." value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} onKeyPress={e => e.key === 'Enter' && callAiAgent()} style={{ flex: 1 }} />
               <button className="btn btn-primary" onClick={callAiAgent} disabled={isAiLoading}><Send size={20} /></button>
             </div>
+          </div>
+        )}
+
+        {totalPages > 1 && (
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '0.5rem', marginBottom: '1.5rem' }}>
+            <button 
+              className="btn" 
+              disabled={currentPage === 1}
+              onClick={() => {
+                setCurrentPage(prev => Math.max(1, prev - 1));
+              }}
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', opacity: currentPage === 1 ? 0.5 : 1 }}
+            >
+              Anterior
+            </button>
+            <span style={{ display: 'flex', alignItems: 'center', padding: '0 1rem', background: 'var(--bg-card)', borderRadius: '0.5rem', border: '1px solid var(--border)' }}>
+              Página {currentPage} de {totalPages}
+            </span>
+            <button 
+              className="btn" 
+              disabled={currentPage === totalPages}
+              onClick={() => {
+                setCurrentPage(prev => Math.min(totalPages, prev + 1));
+              }}
+              style={{ background: 'var(--bg-card)', border: '1px solid var(--border)', opacity: currentPage === totalPages ? 0.5 : 1 }}
+            >
+              Próxima
+            </button>
           </div>
         )}
 
@@ -763,9 +1113,14 @@ function App() {
                   </div>
                 ))}
               </div>
+              <div style={{ display: 'flex', gap: '0.8rem', marginBottom: '1.5rem' }}>
+                <button className="btn" style={{ flex: 1, background: 'rgba(255,255,255,0.05)', border: '1px solid var(--border)', justifyContent: 'center' }} onClick={() => api?.zoomReset()}>
+                   <Search size={16} /> Resetar Zoom (100%)
+                </button>
+              </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
                 <label className="form-label" style={{ marginBottom: 0, opacity: 0.7, fontSize: '0.85rem' }}>Presets salvos</label>
-                <button className="btn btn-primary" style={{ padding: '0.4rem 0.9rem', fontSize: '0.8rem' }} onClick={savePreset}>
+                <button className="btn btn-primary" style={{ padding: '0.4rem 0.9rem', fontSize: '0.8rem' }} onClick={() => setShowPresetModal(true)}>
                   <Plus size={13} /> Salvar Tema Atual
                 </button>
               </div>
@@ -845,7 +1200,7 @@ function App() {
             </div>
 
             {/* SEÇÃO: MATÉRIAS */}
-            <div className="admin-section" style={{ marginBottom: 0 }}>
+            <div className="admin-section">
               <div className="admin-section-title">
                 <BookOpen size={16} />
                 <span>Gestão de Matérias</span>
@@ -881,6 +1236,27 @@ function App() {
                 ))}
               </div>
             </div>
+
+            {/* SEÇÃO: SEGURANÇA */}
+            <div className="admin-section" style={{ marginBottom: 0 }}>
+              <div className="admin-section-title">
+                <Lock size={16} />
+                <span>Segurança</span>
+              </div>
+              <div style={{ display: 'flex', gap: '0.8rem' }}>
+                <input
+                  className="form-input"
+                  type="password"
+                  placeholder="Nova senha de administrador..."
+                  value={newPasswordInput}
+                  style={{ flex: 1, marginBottom: 0 }}
+                  onChange={e => setNewPasswordInput(e.target.value)}
+                />
+                <button className="btn btn-primary" onClick={changePassword} disabled={isChangingPassword}>
+                  {isChangingPassword ? 'Alterando...' : 'Alterar Senha'}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -893,8 +1269,8 @@ function App() {
               <h2>Acesso Admin</h2>
               <button className="modal-close" onClick={() => setShowLogin(false)}><X size={20} /></button>
             </div>
-            <div className="form-group"><label>Senha</label><input className="form-input" type="password" value={password} onChange={e => setPassword(e.target.value)} onKeyPress={e => e.key === 'Enter' && (password === 'admin' ? (setIsAdmin(true), localStorage.setItem('dp_admin', 'true'), setShowLogin(false), setPassword('')) : alert('Erro'))} /></div>
-            <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => password === 'admin' ? (setIsAdmin(true), localStorage.setItem('dp_admin', 'true'), setShowLogin(false), setPassword('')) : alert('Erro')}>Entrar</button>
+            <div className="form-group"><label>Senha</label><input className="form-input" type="password" value={password} onChange={e => setPassword(e.target.value)} onKeyPress={e => e.key === 'Enter' && (password === storedPassword ? (setIsAdmin(true), localStorage.setItem('dp_admin', 'true'), setShowLogin(false), setPassword('')) : alert('Senha incorreta!'))} /></div>
+            <button className="btn btn-primary" style={{ width: '100%' }} onClick={() => password === storedPassword ? (setIsAdmin(true), localStorage.setItem('dp_admin', 'true'), setShowLogin(false), setPassword('')) : alert('Senha incorreta!')}>Entrar</button>
           </div>
         </div>
       )}
@@ -1089,6 +1465,74 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* MODAL SALVAR PRESET */}
+      {showPresetModal && (
+        <div className="modal-overlay" onClick={() => setShowPresetModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '400px' }}>
+            <div className="modal-header">
+              <h2>Salvar Preset</h2>
+              <button className="modal-close" onClick={() => setShowPresetModal(false)}><X size={20} /></button>
+            </div>
+            <div className="form-group">
+              <label className="form-label">Nome do Preset</label>
+              <input
+                className="form-input"
+                placeholder="Ex: Tema Escuro Azul"
+                value={presetNameInput}
+                onChange={e => setPresetNameInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') savePreset(); }}
+                autoFocus
+              />
+            </div>
+            <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', marginTop: '1rem' }} onClick={savePreset}>
+              <Check size={16} /> Salvar
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm Dialog Modal */}
+      {confirmDialog && (
+        <div className="modal-overlay" onClick={() => setConfirmDialog(null)} style={{ zIndex: 9999 }}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{
+            maxWidth: '380px',
+            textAlign: 'center',
+            padding: '2.5rem 2rem',
+            background: 'var(--theme-bg-card)',
+            border: '1px solid rgba(255,255,255,0.05)',
+            boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.5)',
+            borderRadius: '16px'
+          }}>
+            <div style={{ marginBottom: '1.5rem', color: '#e74c3c', display: 'flex', justifyContent: 'center' }}>
+              <div style={{ background: 'rgba(231, 76, 60, 0.1)', padding: '1rem', borderRadius: '50%' }}>
+                <AlertTriangle size={42} strokeWidth={1.5} />
+              </div>
+            </div>
+            <h3 style={{ marginBottom: '0.75rem', color: 'var(--theme-text)', fontSize: '1.25rem', fontWeight: 600 }}>Tem certeza?</h3>
+            <p style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.95rem', marginBottom: '2rem', lineHeight: '1.5' }}>
+              {confirmDialog.message}
+            </p>
+            <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'center' }}>
+              <button 
+                className="btn" 
+                style={{ flex: 1, background: 'rgba(255,255,255,0.05)', color: 'var(--theme-text)', border: '1px solid rgba(255,255,255,0.1)' }} 
+                onClick={() => setConfirmDialog(null)}
+              >
+                Cancelar
+              </button>
+              <button 
+                className="btn" 
+                style={{ flex: 1, background: '#e74c3c', color: '#fff', border: 'none', fontWeight: 600, boxShadow: '0 4px 14px rgba(231, 76, 60, 0.3)' }} 
+                onClick={() => { confirmDialog.onConfirm(); setConfirmDialog(null); }}
+              >
+                Sim, Excluir
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   )
 }
