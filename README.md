@@ -10,12 +10,12 @@
 
 ## 📥 Downloads
 
-Baixe o instalador pronto para o seu sistema:
+Baixe o instalador pronto para o seu sistema na [Página de Releases](https://github.com/S4FoGui/Drive-de-pobre/releases/latest):
 
 | Sistema | Arquivo | Notas |
 |---|---|---|
-| 🐧 **Linux** (Debian/Arch/Ubuntu) | `Drive de Pobre-1.0.0.AppImage` | Não precisa instalar, só executar |
-| 🪟 **Windows** | `Drive de Pobre Setup 1.0.0.exe` | Instalador padrão NSIS |
+| 🐧 **Linux** (Debian/Arch/Ubuntu) | [Drive de Pobre-1.0.0.AppImage](https://github.com/S4FoGui/Drive-de-pobre/releases/download/v1.0.0/Drive.de.Pobre-1.0.0.AppImage) | Não precisa instalar, só executar |
+| 🪟 **Windows** | [Drive de Pobre Setup 1.0.0.exe](https://github.com/S4FoGui/Drive-de-pobre/releases/download/v1.0.0/Drive.de.Pobre.Setup.1.0.0.exe) | Instalador padrão NSIS |
 
 ---
 
