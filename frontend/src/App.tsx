@@ -134,6 +134,7 @@ function App() {
   const [isUploading, setIsUploading] = useState(false)
   const [isExportingDrive, setIsExportingDrive] = useState(false)
   const [isImportingDrive, setIsImportingDrive] = useState(false)
+  const [showExportDestinationModal, setShowExportDestinationModal] = useState(false)
   const [password, setPassword] = useState('')
   const [showApiKey, setShowApiKey] = useState(false)
   const [savedIndicator, setSavedIndicator] = useState(false)
@@ -302,8 +303,9 @@ function App() {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const exportDrive = async () => {
+  const exportDrive = async (destination: 'local' | 'google-drive') => {
     setIsExportingDrive(true);
+    setShowExportDestinationModal(false);
     try {
       const selectedSubs = exportSubjects ?? subjects;
       const res = await fetch(`${API_URL}/export-drive-zip`, {
@@ -320,6 +322,16 @@ function App() {
       const zipBlob = await res.blob();
       const filename = `drive-export-${new Date().toISOString().slice(0, 10)}.zip`;
       downloadBlob(zipBlob, filename);
+      if (destination === 'google-drive') {
+        const driveUrl = 'https://drive.google.com/drive/my-drive';
+        const api = (window as any).electronAPI;
+        if (api?.openExternal) {
+          api.openExternal(driveUrl);
+        } else {
+          window.open(driveUrl, '_blank', 'noopener,noreferrer');
+        }
+        alert(`Backup "${filename}" gerado. O Google Drive foi aberto para conectar sua conta e enviar o arquivo.`);
+      }
     } catch (error) {
       alert(`Erro ao exportar drive: ${error instanceof Error ? error.message : 'Falha desconhecida.'}`);
     } finally {
@@ -472,19 +484,57 @@ function App() {
     });
   };
 
+  const normalizeForMatch = (value: string) => {
+    return value
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .trim();
+  };
+
+  const cleanExtractedTitle = (title: string) => {
+    return title
+      .replace(/\*\*/g, '')
+      .replace(/__/g, '')
+      .replace(/`/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
   const extractLinks = (text: string) => {
     const links: { title: string, url: string }[] = [];
     let cleanedText = text;
 
+    const addLink = (title: string, url: string) => {
+      const cleanTitle = cleanExtractedTitle(title);
+      const cleanUrl = url.trim().replace(/[.,;]+$/g, '');
+      if (!cleanUrl) return;
+      links.push({ title: cleanTitle || 'Novo Material', url: cleanUrl });
+    };
+
+    // Tabelas Markdown: | **Titulo real** | [Assistir](https://...) |
+    const tableRowRegex = /^\s*\|\s*(?!:?-{2,}:?\s*\|)(.*?)\s*\|\s*\[[^\]]*\]\((https?:\/\/[^\s\)]+)\)\s*\|?\s*$/gm;
+    cleanedText = cleanedText.replace(tableRowRegex, (_match, titleCell, url) => {
+      addLink(titleCell, url);
+      return '[LINK]';
+    });
+
+    // Listas Markdown comuns: **Titulo real** | [Assistir](https://...)
+    const titledMdRegex = /\*\*([^*]+)\*\*\s*(?:[-–—:|]\s*)?\[[^\]]*\]\((https?:\/\/[^\s\)]+)\)/g;
+    cleanedText = cleanedText.replace(titledMdRegex, (_match, title, url) => {
+      addLink(title, url);
+      return '[LINK]';
+    });
+
     const mdRegex = /\[(.*?)\]\((https?:\/\/[^\s\)]+)\)/g;
     cleanedText = cleanedText.replace(mdRegex, (_match, title, url) => {
-      links.push({ title: title.trim() || 'Novo Material', url: url.trim() });
+      addLink(title, url);
       return '[LINK]';
     });
 
     const plainRegex = /(https?:\/\/[^\s]+)/g;
     cleanedText = cleanedText.replace(plainRegex, (_match, url) => {
-      links.push({ title: 'Novo Material', url: url.trim() });
+      addLink('Novo Material', url);
       return '[LINK]';
     });
 
@@ -493,25 +543,30 @@ function App() {
 
   // Tenta detectar o nome da matéria localmente no texto do usuário
   const detectSubjectLocally = (text: string): string | null => {
-    const lower = text.toLowerCase();
-    // Padrões comuns: "crie a pasta X", "adicione na pasta X", "na matéria X", "pasta X"
+    const normalizedLower = normalizeForMatch(text);
+
+    // Prioridade: comandos explícitos como "adicione em Redação".
     const patterns = [
-      /(?:cri[ea]r?|adicionar?|colocar?)\s+(?:a\s+)?(?:pasta|mat[ée]ria|folder)\s+["']?([\w\s-]+?)["']?(?:\s+e\s|\s*$|\s*\n)/i,
-      /(?:pasta|mat[ée]ria|folder)\s+["']?([\w\s-]+?)["']?(?:\s+e\s|\s*$|\s*\n)/i,
-      /(?:adicione?\s+(?:em|na|no|para)\s+)([\w\s-]+?)(?:\s*$|\s*\n|\s*#)/i,
+      /(?:cri[ea]r?|adicionar?|colocar?)\s+(?:a\s+)?(?:pasta|mat[ée]ria|folder)\s+["']?([^#\n\r]+?)["']?(?:\s+e\s|\s*$|\s*\n|\s*#)/i,
+      /(?:pasta|mat[ée]ria|folder)\s+["']?([^#\n\r]+?)["']?(?:\s+e\s|\s*$|\s*\n|\s*#)/i,
+      /(?:adicione?\s+(?:em|na|no|para)\s+)([^#\n\r]+?)(?:\s*$|\s*\n|\s*#)/i,
     ];
     for (const pattern of patterns) {
       const match = text.match(pattern);
       if (match?.[1]) {
-        return match[1].trim();
+        const detected = match[1].trim();
+        const existing = subjects.find(s => normalizeForMatch(s) === normalizeForMatch(detected));
+        return existing || detected;
       }
     }
-    // Tenta encontrar uma matéria existente mencionada no texto
+
+    // Depois, detectar matéria já existente citada no texto, inclusive com acentos.
     for (const sub of subjects) {
-      if (lower.includes(sub.toLowerCase())) {
+      if (normalizedLower.includes(normalizeForMatch(sub))) {
         return sub;
       }
     }
+
     return null;
   };
 
@@ -522,29 +577,22 @@ function App() {
     const { links: extractedLinks, cleanedText } = extractLinks(aiPrompt);
     const isBatchMode = extractedLinks.length >= 3;
 
-    // Em batch mode, resolve 100% local — NUNCA chama a IA para batch
-    if (isBatchMode) {
+    // Em batch mode, tentamos resolver localmente apenas se houver uma matéria MUITO óbvia.
+    // Se o usuário pedir para "organizar", "separar" ou houver múltiplos tópicos (#), deixamos a IA processar.
+    const hasMultipleTopics = aiPrompt.includes('#') || aiPrompt.includes('---') || (aiPrompt.match(/:/g) || []).length > 2;
+    const isComplex = hasMultipleTopics || aiPrompt.toLowerCase().includes('organize') || aiPrompt.toLowerCase().includes('separe');
+
+    if (isBatchMode && !isComplex) {
       try {
-        // Prioridade: 1) detectar do texto, 2) pasta selecionada na sidebar, 3) última pasta criada
         let targetSubject = detectSubjectLocally(aiPrompt);
-        
-        if (!targetSubject && selectedSubject !== 'Todas') {
-          targetSubject = selectedSubject;
-        }
-        
-        if (!targetSubject && subjects.length > 0) {
-          targetSubject = subjects[subjects.length - 1]; // última pasta criada
-        }
-        
-        if (!targetSubject) {
-          targetSubject = 'Geral';
-        }
+        if (!targetSubject && selectedSubject !== 'Todas') targetSubject = selectedSubject;
+        if (!targetSubject && subjects.length > 0) targetSubject = subjects[subjects.length - 1];
+        if (!targetSubject) targetSubject = 'Geral';
         
         let newSubjects = [...subjects];
         if (!newSubjects.some(s => s.toLowerCase() === targetSubject!.toLowerCase())) {
           newSubjects = mergeSubjects([...newSubjects, targetSubject]);
         }
-        // Usa o nome exato da matéria existente ou o novo
         const exactSubject = newSubjects.find(s => s.toLowerCase() === targetSubject!.toLowerCase()) || targetSubject;
         const batchMaterials: Material[] = extractedLinks.map((link, idx) => ({
           id: `${Date.now()}-${idx}-${Math.random().toString(16).slice(2, 8)}`,
@@ -553,27 +601,30 @@ function App() {
           type: isYouTubeUrl(link.url) ? 'video' : 'link',
           url: link.url
         }));
-        const newMaterials = [...materials, ...batchMaterials];
-        setMaterials(newMaterials);
+        setMaterials([...materials, ...batchMaterials]);
         setSubjects(newSubjects);
-        saveData(newMaterials, newSubjects, theme, themePresets);
+        saveData([...materials, ...batchMaterials], newSubjects, theme, themePresets);
         setAiPrompt('');
         return;
-      } finally {
-        setIsAiLoading(false);
-      }
+      } finally { setIsAiLoading(false); }
     }
 
     let sys = "";
     let finalPrompt = aiPrompt;
 
     if (isBatchMode) {
-      sys = `Admin Drive de Pobre. Materias: [${subjects.join(', ')}]. O usuário enviou ${extractedLinks.length} links que foram interceptados pelo sistema (substituídos por [LINK]). Identifique a matéria de destino. Retorne APENAS UM JSON: {"action": "BATCH_ADD", "subject": "NOME_DA_MATERIA"}. Se não souber, use "${subjects[0] || 'Geral'}". Não retorne mais nada.`;
-      // Enviar apenas as primeiras 5 linhas do texto limpo para economizar tokens
-      const lines = cleanedText.split('\n').filter(l => l.trim());
-      finalPrompt = lines.slice(0, 5).join('\n') + (lines.length > 5 ? `\n... (${lines.length} linhas no total)` : '');
+      sys = `Admin Drive de Pobre. Matérias atuais: [${subjects.join(', ')}]. 
+      O usuário enviou ${extractedLinks.length} materiais. 
+      REGRAS:
+      1. Identifique os tópicos/matérias no texto. Você PODE e DEVE criar NOVAS matérias se o usuário sugerir ou se o conteúdo pedir.
+      2. Se todos os links forem da mesma matéria, retorne {"action": "BATCH_ADD", "subject": "Nome da Matéria"}.
+      3. Se houver matérias diferentes, retorne {"action": "BATCH_ADD", "assignments": ["Materia 1", "Materia 1", "Materia 2", ...]} onde o array tem EXATAMENTE ${extractedLinks.length} nomes de matérias, correspondendo aos links na ordem.
+      Retorne APENAS o JSON.`;
+      
+      const linkList = extractedLinks.map((l, i) => `${i+1}. ${l.title}`).join('\n');
+      finalPrompt = `TEXTO DO USUÁRIO:\n${cleanedText}\n\nLISTA DE MATERIAIS EXTRAÍDOS:\n${linkList}`;
     } else {
-      sys = `Admin Drive de Pobre. Materias: [${subjects.join(', ')}]. Ações disponíveis (JSON): {"action": "ADD_SUBJECT", "name": "N"}, {"action": "DELETE_SUBJECT", "name": "N"}, {"action": "ADD_MATERIAL", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "EDIT_MATERIAL", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "DELETE_MATERIAL", "title": "T"}, {"action": "CLEAR_SUBJECT", "subject": "S"}, {"action": "REORDER_VIDEOS", "subject": "S"}, {"action": "MOVE_ALL", "fromSubject": "S", "toSubject": "S"}. REGRAS: Se o link for do YouTube, use type: "video". Para EDIT/DELETE, informe o "title" exato baseado no prompt do usuário para localizar. A ação CLEAR_SUBJECT apaga todos os vídeos de uma matéria. A ação MOVE_ALL move todos os materiais de uma matéria para outra. A ação REORDER_VIDEOS ordena os vídeos de uma matéria extraindo os números do título. Para UMA ação responda com um único JSON. Para MÚLTIPLAS, use array JSON [...]. Nunca inclua texto fora do JSON.`;
+      sys = `Admin Drive de Pobre. Matérias: [${subjects.join(', ')}]. Ações: {"action": "ADD_SUBJECT", "name": "N"}, {"action": "DELETE_SUBJECT", "name": "N"}, {"action": "ADD_MATERIAL", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "EDIT_MATERIAL", "title": "T", "subject": "S", "type": "video|pdf|link", "url": "U"}, {"action": "DELETE_MATERIAL", "title": "T"}, {"action": "CLEAR_SUBJECT", "subject": "S"}, {"action": "MOVE_ALL", "fromSubject": "S", "toSubject": "S"}. REGRAS: Se o usuário citar uma matéria que não existe, crie-a informando o novo nome no campo "subject". YouTube sempre é type "video". Responda APENAS JSON.`;
     }
 
     try {
@@ -654,18 +705,26 @@ function App() {
           newSubjects = mergeSubjects([...newSubjects, String(act.name || '')]);
 
         } else if (act.action === "BATCH_ADD") {
-          const subject = String(act.subject || newSubjects[0] || '');
-          // Auto-criar a matéria se não existir
-          if (!newSubjects.some(s => s.toLowerCase() === subject.toLowerCase())) {
-            newSubjects = mergeSubjects([...newSubjects, subject]);
-          }
-          const batchMaterials: Material[] = extractedLinks.map((link, idx) => ({
-            id: `${Date.now()}-${idx}-${Math.random().toString(16).slice(2, 8)}`,
-            title: link.title,
-            subject,
-            type: isYouTubeUrl(link.url) ? 'video' : 'link',
-            url: link.url
-          }));
+          const assignments = Array.isArray(act.assignments) ? act.assignments : null;
+          const defaultSubject = String(act.subject || newSubjects[0] || 'Geral');
+          
+          const batchMaterials: Material[] = extractedLinks.map((link, idx) => {
+            const subjectName = (assignments && assignments[idx]) ? String(assignments[idx]) : defaultSubject;
+            
+            // Auto-criar se não existir
+            if (subjectName && !newSubjects.some(s => s.toLowerCase() === subjectName.toLowerCase())) {
+              newSubjects = mergeSubjects([...newSubjects, subjectName]);
+            }
+            const exactSubject = newSubjects.find(s => s.toLowerCase() === subjectName.toLowerCase()) || subjectName;
+
+            return {
+              id: `${Date.now()}-${idx}-${Math.random().toString(16).slice(2, 8)}`,
+              title: link.title,
+              subject: exactSubject,
+              type: isYouTubeUrl(link.url) ? 'video' : 'link',
+              url: link.url
+            };
+          });
           newMaterials = [...newMaterials, ...batchMaterials];
 
         } else if (act.action === "DELETE_SUBJECT") {
@@ -1186,7 +1245,7 @@ function App() {
                 <button
                   className="btn"
                   style={{ border: '1px solid var(--border)', background: 'transparent', flex: 1, opacity: activeExportSubjects.length === 0 ? 0.45 : 1 }}
-                  onClick={exportDrive}
+                  onClick={() => setShowExportDestinationModal(true)}
                   disabled={isExportingDrive || activeExportSubjects.length === 0}
                   title={activeExportSubjects.length === 0 ? 'Selecione ao menos uma matéria' : ''}
                 >
@@ -1256,6 +1315,49 @@ function App() {
                   {isChangingPassword ? 'Alterando...' : 'Alterar Senha'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL DESTINO DA EXPORTACAO */}
+      {showExportDestinationModal && (
+        <div className="modal-overlay" onClick={() => setShowExportDestinationModal(false)} style={{ zIndex: 9998 }}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '420px' }}>
+            <div className="modal-header">
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                <Database size={20} style={{ opacity: 0.8 }} />
+                <h2 style={{ margin: 0, fontSize: '1.1rem' }}>Exportar Drive</h2>
+              </div>
+              <button className="modal-close" onClick={() => setShowExportDestinationModal(false)}><X size={20} /></button>
+            </div>
+
+            <div style={{ display: 'grid', gap: '0.8rem' }}>
+              <button
+                className="btn"
+                style={{ width: '100%', justifyContent: 'flex-start', border: '1px solid var(--border)', background: 'rgba(255,255,255,0.04)', padding: '0.9rem 1rem' }}
+                onClick={() => exportDrive('local')}
+                disabled={isExportingDrive}
+              >
+                <Download size={18} />
+                <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.2rem' }}>
+                  <strong>Salvar local</strong>
+                  <span style={{ fontSize: '0.78rem', opacity: 0.6 }}>Baixar o backup ZIP neste computador</span>
+                </span>
+              </button>
+
+              <button
+                className="btn btn-primary"
+                style={{ width: '100%', justifyContent: 'flex-start', padding: '0.9rem 1rem' }}
+                onClick={() => exportDrive('google-drive')}
+                disabled={isExportingDrive}
+              >
+                <Globe size={18} />
+                <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: '0.2rem' }}>
+                  <strong>Google Drive</strong>
+                  <span style={{ fontSize: '0.78rem', opacity: 0.75 }}>Abrir o Drive para conectar o Gmail</span>
+                </span>
+              </button>
             </div>
           </div>
         </div>

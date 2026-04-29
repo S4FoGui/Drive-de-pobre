@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 
 let mainWindow;
@@ -45,6 +45,11 @@ function createWindow() {
   });
   ipcMain.on('window-zoom-reset', () => {
     mainWindow.webContents.setZoomFactor(1.0);
+  });
+  ipcMain.on('open-external-url', (_event, url) => {
+    if (typeof url !== 'string' || !/^https?:\/\//.test(url)) return;
+    shell.openExternal(url);
+    mainWindow?.minimize();
   });
 }
 

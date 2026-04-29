@@ -7,4 +7,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   zoomIn: () => ipcRenderer.send('window-zoom-in'),
   zoomOut: () => ipcRenderer.send('window-zoom-out'),
   zoomReset: () => ipcRenderer.send('window-zoom-reset'),
+  openExternal: (url) => ipcRenderer.send('open-external-url', url),
 });
